@@ -22,10 +22,15 @@ and Phases of Play datasets. No film/video files are involved anywhere in this p
 - `skillcorner_exploration.ipynb` — a first exploration notebook. Built against
   **synthetic data matching the real schema exactly** (no network access was available
   in the chat sandbox that produced it), and used to test whether the 8-gate query
-  categories below resolve as simple field filters or need custom logic. **Priority
-  next step: re-run this notebook against a real match's `_dynamic_events.csv` /
-  `_tracking_extrapolated.jsonl` from the actual repo** (clone it, since this
-  environment has real network access unlike the chat that built the first pass).
+  categories below resolve as simple field filters or need custom logic.
+- `docs/real_data_validation.md` / `scripts/validate_real_data.py` — the priority next
+  step above, done: re-ran the notebook's 4 representative queries against a real match's
+  `_dynamic_events.csv` (`scripts/fetch_match_data.sh` pulls one from
+  github.com/SkillCorner/opendata). All 4 resolved as direct field filters on real data,
+  confirming the structured-filtering bet; one query (Q3, sequence) needed widening to a
+  real `start_type` value the synthetic generator never produced. Comparative/relational
+  gates (Category 6) still need real tracking data, which is Git-LFS-only upstream and
+  wasn't pulled — see the doc for details.
 
 ## Architecture decided so far (structured filtering, no embeddings — yet)
 
@@ -79,6 +84,13 @@ real questions only touch 2-4 of the 8 categories.
 - Whether/when to add a vector-embedding fallback path for the structured filters that
   can't cover a question (explicitly deferred, not rejected).
 - Full enrichment field list beyond what's already native to the SkillCorner schema.
+- Real-tracking-data validation for the comparative/relational gate (needs a Git LFS pull
+  of `_tracking_extrapolated.jsonl` from SkillCorner/opendata).
+- Hit-rate/false-positive-rate check across the other 9 matches, beyond the one used in
+  `docs/real_data_validation.md`.
+- The actual query-parsing chain (LLM prompt(s) that turn a coach's question into the
+  8-gate structured query) — everything so far has hand-written the target query for a
+  known test-set question; no code yet turns free text into one.
 
 ## Working style notes
 - Brainstorm-then-build sequencing was intentional: test set first, then architecture,
