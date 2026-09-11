@@ -78,93 +78,132 @@ Each question is tagged with a **fidelity** level:
 
 ## Results
 
-| # | Category | Fidelity | Hits (rows) | Matches with ≥1 hit |
-|---|---|---|---|---|
-| 1 | Player-specific | exact | 429 | 20/20 |
-| 2 | Player-specific | exact | 67 | 15/20 |
-| 3 | Player-specific | exact | 68 | 19/20 |
-| 4 | Player-specific | approximate | 724 | 20/20 |
-| 5 | Player-specific | **unresolved** | — | — |
-| 6 | Player-specific | approximate | 0 | 0/20 |
-| 7 | Player-specific | approximate | 47 | 18/20 |
-| 8 | Player-specific | exact | 260 | 20/20 |
-| 9 | Player-specific | exact | 7 | 3/20 |
-| 10 | Player-specific | exact | 101 | 20/20 |
-| 11 | Player-specific | exact | 12 | 6/20 |
-| 12 | Spatial | exact | 92 | 19/20 |
-| 13 | Spatial | exact | 4260 | 20/20 |
-| 14 | Spatial | approximate | 5100 | 20/20 |
-| 15 | Spatial | exact | 67 | 20/20 |
-| 16 | Spatial | exact | 270 | 20/20 |
-| 17 | Spatial | **unresolved** | — | — |
-| 18 | Spatial | approximate | 347 | 20/20 |
-| 19 | Spatial | exact | 3327 | 20/20 |
-| 20 | Spatial | exact | 371 | 20/20 |
-| 21 | Spatial | approximate | 346 | 20/20 |
-| 22 | Spatial | exact | 1056 | 20/20 |
-| 23 | Event-type | exact | 193 | 20/20 |
-| 24 | Event-type | exact | 103 | 20/20 |
-| 25 | Event-type | approximate | 28 | 15/20 |
-| 26 | Event-type | exact | 742 | 20/20 |
-| 27 | Event-type | **unresolved** | — | — |
-| 28 | Event-type | exact | 133 | 20/20 |
-| 29 | Event-type | approximate | 72 | 16/20 |
-| 30 | Event-type | exact | 1052 | 20/20 |
-| 31 | Event-type | exact | 700 | 20/20 |
-| 32 | Event-type | approximate | 35 | 14/20 |
-| 33 | Event-type | exact | 1052 | 20/20 |
-| 34 | Sequence | exact | 62 | 19/20 |
-| 35 | Sequence | approximate | 80 | 18/20 |
-| 36 | Sequence | approximate | 0 | 0/20 |
-| 37 | Sequence | exact | 2845 | 20/20 |
-| 38 | Sequence | exact | 115 | 20/20 |
-| 39 | Sequence | exact | 47 | 19/20 |
-| 40 | Sequence | exact | 115 | 20/20 |
-| 41 | Sequence | exact | 89 | 18/20 |
-| 42 | Sequence | exact | 1390 | 20/20 |
-| 43 | Sequence | approximate | 112 | 20/20 |
-| 44 | Sequence | approximate | 460 | 20/20 |
-| 45 | Game-state | exact | 6474 | 19/20 |
-| 46 | Game-state | exact | 353 | 12/20 |
-| 47 | Game-state | exact | 927 | 19/20 |
-| 48 | Game-state | approximate | 255 | 20/20 |
-| 49 | Game-state | **unresolved** | — | — |
-| 50 | Game-state | exact | 195 | 18/20 |
-| 51 | Game-state | **unresolved** | — | — |
-| 52 | Game-state | exact | 37 | 16/20 |
-| 53 | Game-state | exact | 180 | 20/20 |
-| 54 | Game-state | exact (aggregate, not a filter) | — | — |
-| 55 | Comparative | approximate | 84 | 19/20 |
-| 56 | Comparative | **unresolved** | — | — |
-| 57 | Comparative | approximate | 19 | 7/20 |
-| 58 | Comparative | exact | 327 | 20/20 |
-| 59 | Comparative | **unresolved** | — | — |
-| 60 | Comparative | exact | 888 | 20/20 |
-| 61 | Comparative | exact | 37 | 10/20 |
-| 62 | Comparative | approximate | 52 | 15/20 |
-| 63 | Comparative | exact | 3126 | 20/20 |
-| 64 | Comparative | exact | 2528 | 20/20 |
-| 65 | Negative/absence | exact | 226 | 20/20 |
-| 66 | Negative/absence | **unresolved** | — | — |
-| 67 | Negative/absence | approximate | 13 | 9/20 |
-| 68 | Negative/absence | approximate | 89 | 20/20 |
-| 69 | Negative/absence | **unresolved** | — | — |
-| 70 | Negative/absence | approximate | 42 | 15/20 |
-| 71 | Negative/absence | exact | 2005 | 20/20 |
-| 72 | Negative/absence | exact | 1379 | 20/20 |
-| 73 | Negative/absence | exact | 496 | 20/20 |
-| 74 | Negative/absence | approximate | 381 | 20/20 |
-| 75 | Composite | exact | 5 | 5/20 |
-| 76 | Composite | **unresolved** | — | — |
-| 77 | Composite | exact | 67 | 17/20 |
-| 78 | Composite | **unresolved** | — | — |
-| 79 | Composite | approximate | 15 | 9/20 |
-| 80 | Composite | exact | 1 | 1/20 |
+Query time is wall-clock for that question's own retrieval query only (filters, anti-joins,
+phase lookups), run against the already-loaded and merged event tables — i.e. the
+"Retrieval" pipeline stage from `CLAUDE.md`, not the one-time "Preprocessing/enrichment"
+stage (loading 20 CSVs, merging the roster, splitting by `event_type`) that happens once up
+front regardless of which question gets asked. Single-process Python timing, one run —
+expect run-to-run variance of tens of percent, not a precise benchmark; see
+[Query timing](#query-timing) below for the aggregate picture, which is the more reliable
+takeaway.
+
+| # | Category | Fidelity | Hits (rows) | Matches with ≥1 hit | Query time (ms) |
+|---|---|---|---|---|---|
+| 1 | Player-specific | exact | 429 | 20/20 | 23.8 |
+| 2 | Player-specific | exact | 67 | 15/20 | 18.5 |
+| 3 | Player-specific | exact | 68 | 19/20 | 12.7 |
+| 4 | Player-specific | approximate | 724 | 20/20 | 35.3 |
+| 5 | Player-specific | **unresolved** | — | — | — |
+| 6 | Player-specific | approximate | 0 | 0/20 | 10.6 |
+| 7 | Player-specific | approximate | 47 | 18/20 | 9.7 |
+| 8 | Player-specific | exact | 260 | 20/20 | 61.4 |
+| 9 | Player-specific | exact | 7 | 3/20 | 7.3 |
+| 10 | Player-specific | exact | 101 | 20/20 | 13.8 |
+| 11 | Player-specific | exact | 12 | 6/20 | 7.8 |
+| 12 | Spatial | exact | 92 | 19/20 | 14.7 |
+| 13 | Spatial | exact | 4260 | 20/20 | 82.8 |
+| 14 | Spatial | approximate | 5100 | 20/20 | 146.7 |
+| 15 | Spatial | exact | 67 | 20/20 | 9.6 |
+| 16 | Spatial | exact | 270 | 20/20 | 20.4 |
+| 17 | Spatial | **unresolved** | — | — | — |
+| 18 | Spatial | approximate | 347 | 20/20 | 17.8 |
+| 19 | Spatial | exact | 3327 | 20/20 | 99.3 |
+| 20 | Spatial | exact | 371 | 20/20 | 25.4 |
+| 21 | Spatial | approximate | 346 | 20/20 | 25.6 |
+| 22 | Spatial | exact | 1056 | 20/20 | 48.6 |
+| 23 | Event-type | exact | 193 | 20/20 | 19.6 |
+| 24 | Event-type | exact | 103 | 20/20 | 15.8 |
+| 25 | Event-type | approximate | 28 | 15/20 | 11.8 |
+| 26 | Event-type | exact | 742 | 20/20 | 38.1 |
+| 27 | Event-type | **unresolved** | — | — | — |
+| 28 | Event-type | exact | 133 | 20/20 | 18.2 |
+| 29 | Event-type | approximate | 72 | 16/20 | 13.4 |
+| 30 | Event-type | exact | 1052 | 20/20 | 47.9 |
+| 31 | Event-type | exact | 700 | 20/20 | 35.5 |
+| 32 | Event-type | approximate | 35 | 14/20 | 19.2 |
+| 33 | Event-type | exact | 1052 | 20/20 | 37.6 |
+| 34 | Sequence | exact | 62 | 19/20 | 13.8 |
+| 35 | Sequence | approximate | 80 | 18/20 | 75.9 |
+| 36 | Sequence | approximate | 0 | 0/20 | 8.5 |
+| 37 | Sequence | exact | 2845 | 20/20 | 57.7 |
+| 38 | Sequence | exact | 115 | 20/20 | 12.3 |
+| 39 | Sequence | exact | 47 | 19/20 | 14.7 |
+| 40 | Sequence | exact | 115 | 20/20 | 9.5 |
+| 41 | Sequence | exact | 89 | 18/20 | 23.8 |
+| 42 | Sequence | exact | 1390 | 20/20 | 56.1 |
+| 43 | Sequence | approximate | 112 | 20/20 | 288.8 |
+| 44 | Sequence | approximate | 460 | 20/20 | 15.2 |
+| 45 | Game-state | exact | 6474 | 19/20 | 34.7 |
+| 46 | Game-state | exact | 353 | 12/20 | 21.0 |
+| 47 | Game-state | exact | 927 | 19/20 | 33.0 |
+| 48 | Game-state | approximate | 255 | 20/20 | 12.1 |
+| 49 | Game-state | **unresolved** | — | — | — |
+| 50 | Game-state | exact | 195 | 18/20 | 11.0 |
+| 51 | Game-state | **unresolved** | — | — | — |
+| 52 | Game-state | exact | 37 | 16/20 | 10.5 |
+| 53 | Game-state | exact | 180 | 20/20 | 13.5 |
+| 54 | Game-state | exact (aggregate, not a filter) | — (aggregate) | — | 6.4 |
+| 55 | Comparative | approximate | 84 | 19/20 | 10.1 |
+| 56 | Comparative | **unresolved** | — | — | — |
+| 57 | Comparative | approximate | 19 | 7/20 | 8.6 |
+| 58 | Comparative | exact | 327 | 20/20 | 14.1 |
+| 59 | Comparative | **unresolved** | — | — | — |
+| 60 | Comparative | exact | 888 | 20/20 | 34.8 |
+| 61 | Comparative | exact | 37 | 10/20 | 9.1 |
+| 62 | Comparative | approximate | 52 | 15/20 | 12.9 |
+| 63 | Comparative | exact | 3126 | 20/20 | 118.1 |
+| 64 | Comparative | exact | 2528 | 20/20 | 83.4 |
+| 65 | Negative/absence | exact | 226 | 20/20 | 217.1 |
+| 66 | Negative/absence | **unresolved** | — | — | — |
+| 67 | Negative/absence | approximate | 13 | 9/20 | 112.0 |
+| 68 | Negative/absence | approximate | 89 | 20/20 | 53.8 |
+| 69 | Negative/absence | **unresolved** | — | — | — |
+| 70 | Negative/absence | approximate | 42 | 15/20 | 139.5 |
+| 71 | Negative/absence | exact | 2005 | 20/20 | 29.5 |
+| 72 | Negative/absence | exact | 1379 | 20/20 | 30.1 |
+| 73 | Negative/absence | exact | 496 | 20/20 | 12.9 |
+| 74 | Negative/absence | approximate | 381 | 20/20 | 55.8 |
+| 75 | Composite | exact | 5 | 5/20 | 11.4 |
+| 76 | Composite | **unresolved** | — | — | — |
+| 77 | Composite | exact | 67 | 17/20 | 9.0 |
+| 78 | Composite | **unresolved** | — | — | — |
+| 79 | Composite | approximate | 15 | 9/20 | 64.7 |
+| 80 | Composite | exact | 1 | 1/20 | 6.7 |
 
 Q54 ("passing tempo when leading by 2+") is an aggregate stat, not a hit-count filter: share
 of long passes was 4.4% normally vs 4.1% leading by 2+ — a real but very small effect over
 this data, i.e. no strong evidence teams in this dataset go noticeably more direct when
 comfortably ahead.
+
+## Query timing
+
+Over the 69 questions that ran a real query (11 unresolved questions have none): **total
+2.7s, mean 39ms, median 19ms, min 6.4ms (Q54), max 289ms (Q43)** — all comfortably inside
+an interactive request budget on top of a one-time preprocessing pass, even before any
+optimization (no indexing beyond pandas' default, no caching between questions, boolean
+masks recomputed from scratch every time).
+
+The slowest 5 (Q43 289ms, Q65 217ms, Q14 147ms, Q70 140ms, Q63 118ms) share a pattern worth
+noting for the eventual retrieval-engine design:
+- **`phase_reaches` (Q35, Q43, Q79) and the anti-join questions (Q65, Q67, Q68, Q70, Q74)**
+  are consistently the slowest tier. Both patterns do a `.merge()` or an `.isin()` against a
+  `_pk` (match_id + phase_index) key built by string-concatenating two columns — that key
+  construction plus the join is real relational work, not a simple boolean mask, so it costs
+  roughly 5-15x a plain filter. Sequence and negative/absence gates were already flagged as
+  needing "genuinely different query code" (per the original exploration notebook) — this
+  timing data adds "genuinely more expensive query code" to that.
+- **Q14 (147ms) is a plain boolean filter, not a join**, but touches all 94,517 rows with an
+  `.isin()` over a combined CB+FB position list plus two more comparisons — a reminder that
+  filter *cost* scales with rows touched and condition count, not just query complexity.
+- Even the slowest single question (289ms) is dwarfed by what an LLM call to parse the
+  question into structured filters will cost — the retrieval step is not going to be the
+  bottleneck in the end-to-end pipeline.
+
+Not yet measured: the `_pk` join key is built once during preprocessing here (shared across
+all questions), and this is a single flat pandas frame — a real deployment against a
+database (per `CLAUDE.md`'s pipeline stages) would have different, likely better, timing
+characteristics once proper indexing exists, but this at least establishes that the
+structured-filtering approach has no obvious latency problem at the pandas-prototype level.
 
 ## Bugs this pass caught (and fixed) in the query layer itself
 

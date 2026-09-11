@@ -38,7 +38,10 @@ datasets. No film/video files are involved anywhere in this project.
   to the original notebook's assumption; 3 real "which event_type is this field on"
   schema gotchas the script caught and fixed; and the 4 concrete gaps behind the 11
   unresolved questions (no captain flag, no goal-timestamp field, multi-player geometry
-  needing raw tracking, a few untagged concepts like offside).
+  needing raw tracking, a few untagged concepts like offside). Also times each question's
+  retrieval query: median 19ms, max 289ms (a phase-level anti-join) across all 69 timed
+  questions — no latency concern at the pandas-prototype level, well under whatever an
+  LLM query-parsing call will cost once that stage exists.
 
 ## Architecture decided so far (structured filtering, no embeddings — yet)
 
