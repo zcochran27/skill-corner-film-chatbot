@@ -11,11 +11,11 @@ matches of broadcast tracking data (10 fps) plus SkillCorner's derived Dynamic E
 and Phases of Play datasets. No film/video files are involved anywhere in this project.
 
 ## Reference files in this folder
-- `coach_question_test_set.md` — ~39 seed questions across 7 categories (player-specific,
+- `coach_question_test_set.md` — 80 seed questions across 8 categories (player-specific,
   spatial, event-type, sequence/chain, game-state/temporal, comparative/relational,
-  negative/absence). This is the test set the retrieval architecture is being designed
-  against — every architectural decision should be checked against whether it can
-  actually answer these.
+  negative/absence, and composite/blended questions that combine 2-3 gates at once). This
+  is the test set the retrieval architecture is being designed against — every
+  architectural decision should be checked against whether it can actually answer these.
 - `skillcorner_schema.md` — full reference schema for the SkillCorner tracking data,
   Dynamic Events CSV (~200 attributes across 8 themed groups), and Phases of Play
   framework, pulled from SkillCorner's official CSV specification.
