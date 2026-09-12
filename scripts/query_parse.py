@@ -37,7 +37,7 @@ TWO GUARDRAILS, both required, both from the project's own scar tissue:
                          separate bugs here (docs/master_plan.md 4a).
 
 Running it
-    export ANTHROPIC_API_KEY=...            # see --help for the offline alternative
+    cp .env.example .env                    # then set ANTHROPIC_API_KEY (gitignored)
     python scripts/query_parse.py "show me every shot from outside the box"
     python scripts/query_parse.py --offline "..."   # rule-based stub, no API key needed
     python scripts/query_parse.py --test-set        # parse all 80 test-set questions
@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 from dataclasses import asdict, dataclass, field
@@ -54,6 +53,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from answerability import check as answerability_check  # noqa: E402
+from env import effort as env_effort, require_api_key, status as env_status  # noqa: E402
 from query_schema import FilterError, card_for, validate_filter  # noqa: E402
 
 MODEL = "claude-opus-5"
@@ -178,10 +178,11 @@ class AnthropicGateClient:
             import anthropic
         except ImportError as exc:                      # pragma: no cover
             raise RuntimeError("pip install anthropic") from exc
-        # Resolves ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an `ant auth login` profile.
+        # Loads the gitignored .env if present; an exported variable still wins.
+        require_api_key("the query-parsing chain")
         self._client = anthropic.Anthropic()
         self.model = model
-        self.effort = effort
+        self.effort = effort or env_effort()
 
     def run_gate(self, gate: str, question: str) -> dict:
         system = [{
@@ -351,14 +352,8 @@ def parse(question: str, client=None, verbose: bool = False) -> ParsedQuery:
 
 # --------------------------------------------------------------------------------------
 def _make_client(offline: bool, effort: str | None):
-    if offline:
-        return OfflineGateClient()
-    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
-        print("No ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN found.\n"
-              "  Set one, or run with --offline to exercise the chain with the keyword "
-              "stub.", file=sys.stderr)
-        sys.exit(2)
-    return AnthropicGateClient(effort=effort)
+    """Offline stub, or the real client - which exits with instructions if no key is set."""
+    return OfflineGateClient() if offline else AnthropicGateClient(effort=effort)
 
 
 def main() -> None:
@@ -371,7 +366,12 @@ def main() -> None:
     ap.add_argument("--test-set", action="store_true",
                     help="parse every question in coach_question_test_set.md")
     ap.add_argument("--json", action="store_true", help="emit the full trace as JSON")
+    ap.add_argument("--status", action="store_true", help="report credential status and exit")
     args = ap.parse_args()
+
+    if args.status:
+        print(env_status())
+        return
 
     client = _make_client(args.offline, args.effort)
 

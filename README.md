@@ -38,7 +38,18 @@ scripts/fetch_match_data.sh all --tracking    # Bronze (~1.8 GB; omit --tracking
 python scripts/build_silver.py                # Silver: cleaned/typed tables + validation
 python scripts/build_gold.py                  # Gold:   derived, query-ready tables
 python scripts/test_all_questions.py          # all 80 test-set questions
+
+cp .env.example .env                         # then set ANTHROPIC_API_KEY (gitignored)
+python scripts/query_parse.py --status       # check the credential is picked up
+python scripts/query_parse.py "show me every shot from outside the box"
+python scripts/query_parse.py --offline ...  # no key needed; keyword stub, plumbing only
 ```
+
+Stage 2 (question -> structured query) needs an Anthropic API key. Copy `.env.example` to
+`.env` and fill it in - `.env` is gitignored, `.env.example` is committed so the required
+variables stay documented. Without a key, `--offline` still exercises the chain and both
+guardrails using a keyword stub, which proves the plumbing but says nothing about how well
+questions are actually parsed.
 
 Data follows a mandated bronze/silver/gold layout — see
 [`docs/data_architecture.md`](docs/data_architecture.md). Bronze is immutable raw; each
