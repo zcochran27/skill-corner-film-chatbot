@@ -295,8 +295,9 @@ is failure mode 4a again, with a different trigger and a much wider blast radius
    rather than thresholded. Gives the test set a defensive-work vocabulary the event schema
    lacks entirely.
 6. **Thin eager base** — cheap per-frame scalars + per-team baselines (~40s build).
-7. **Team shape** → Q17. **Dyadic** → Q59, then Q56 (hardest, most parameter-sensitive;
-   prototype on one match).
+7. ~~**Team shape** → Q17~~ — **done, and it never needed tracking** (see 4h). Remaining:
+   **dyadic** → Q59, then Q56 — the hardest and most parameter-sensitive; prototype on one
+   match and eyeball the output before trusting it.
 
 Projected ceiling once the remaining Tier 3 work lands: **~63 exact, ~14 approximate,
 3 unresolved** (captain x2 plus offside). Only Q56 and Q59 are still blocked, both on dyadic
