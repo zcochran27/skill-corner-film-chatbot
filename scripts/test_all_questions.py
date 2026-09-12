@@ -35,6 +35,9 @@ from predicates import OK as PRED_OK, evaluate  # noqa: E402
 from setpiece import (  # noqa: E402
     CORNER_WINDOW, _corners, attacked_near_post, first_ball_contested,
 )
+from defensive import (  # noqa: E402
+    RECOVERY_WINDOW, _candidates as _turnovers, recovery_run,
+)
 
 SILVER = Path(__file__).resolve().parent.parent / "data" / "silver"
 
@@ -275,8 +278,25 @@ def main() -> None:
     add(65, "Negative/absence", "exact", "game_interruption_before, event_type, player_position (anti-join on phase)",
         "", q65)
 
-    add(66, "Negative/absence", "unresolved", "-",
-        "'tracked back' (defensive recovery run without a tagged event) vs 'no recovery run' can't be distinguished from off_ball_run tags alone - this is the exact anti-pattern case the original exploration flagged as needing its own window logic, and the window definition itself (what counts as 'should have recovered') isn't in the schema", None)
+    def q66():
+        """Phase 2: how hard the winger actually worked to get back after a turnover."""
+        cand = _turnovers(events, TRACKED)
+        res = evaluate(cand, recovery_run, RECOVERY_WINDOW,
+                       matches=matches, players=roster_full)
+        ok = res[res.status == PRED_OK]
+        tracked_back = ok[~ok.detail.str.startswith("did not track back")]
+        # Ranked ASCENDING by peak retreat speed: least effort first is the answer.
+        return tracked_back.sort_values("value")
+    add(66, "Negative/absence", "exact (tracking, ranked)",
+        "recovery_run predicate over tracking (scripts/defensive.py)",
+        "phase 2: measures the winger's peak speed while retreating in the 10s after his "
+        "team loses the ball in the opponent half, then ranks ascending so the least effort "
+        "comes first. No event can answer this - all ten off_ball_run subtypes describe "
+        "ATTACKING movement, so defensive work rate is absent from the event vocabulary "
+        "entirely. Also has no event anchor (the question is about a player doing nothing), "
+        "so it anchors on the turnover and finds the winger by position in the frames. "
+        "Hit count is turnovers where he tracked back at all, ranked - not a filtered answer.",
+        q66)
 
     def q67():
         counter_phases = PP[(PP.team_in_possession_phase_type == "quick_break") & (PP.n_opponents_ahead_end == 0)]

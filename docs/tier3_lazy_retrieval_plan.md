@@ -332,7 +332,11 @@ warehouse for the eager design — while removing the two cons that would otherw
    - "Near post" is a definitional choice, not a measurement: a fixed zone moves the answer
      between 12% and 48%. Q68 is therefore returned **ranked by closest approach**, which
      has no cutoff at all.
-5. **Recovery runs (Q66)** — single-player, single-window; unblocks an unresolved question.
+5. ~~**Recovery runs (Q66)**~~ - **built** (`scripts/defensive.py`). Confirms the §4 con
+   about needing an event anchor: the question is about a player doing nothing, so there is
+   no row for him. The workaround is to anchor on his team's turnover - which IS an event -
+   and locate the winger by position within the frames. That pattern should generalise to
+   most "player failed to do X" questions.
 6. **Eager scalar base + baselines** (§5) — once two or three predicates exist and it is
    clear which scalars actually get reused.
 7. **Team shape (Q17)**, then **dyadic (Q59, then Q56)** — hardest and most

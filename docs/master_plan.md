@@ -16,7 +16,8 @@ Single entry point for where this project stands. Start here, then follow the li
 | `scripts/frame_index.py` | Tier 3 random access into tracking (`--benchmark`) |
 | `scripts/mirror_sign.py` | Measured tracking/event coordinate sign per (match, team, period) |
 | `scripts/predicates.py` | Phase-2 predicate harness (`--selftest`) |
-| `scripts/setpiece.py` | First real phase-2 predicates: Q68, Q70 (`--sensitivity`) |
+| `scripts/setpiece.py` | Phase-2 set-piece predicates: Q68, Q70 (`--sensitivity`) |
+| `scripts/defensive.py` | Phase-2 recovery runs: Q66 (`--distribution`) |
 | `docs/test_results_enriched.md` | Current full 80-question run output |
 
 ---
@@ -31,7 +32,7 @@ Single entry point for where this project stands. Start here, then follow the li
 | 1. Preprocessing / enrichment | **Built** | `enrich.py` derivations applied by `build_gold.py`, 32 derived columns |
 | 2. Query parsing (8 gates) | **Not started** | No code turns free text into a structured query yet |
 | 3. Retrieval — phase 1 (events) | **Built** | Median 5ms, max 75ms across 73 timed questions |
-| 3. Retrieval — phase 2 (tracking) | **Working** | First real predicates land Q68/Q70 as exact; ~1.5s vs a 6ms event-filter median |
+| 3. Retrieval — phase 2 (tracking) | **Working** | Q66/Q68/Q70 exact via tracking; 1.6-7.0s vs a 7.7ms event-filter median |
 | 4. Validation | **Designed** | Folded into phase 2: the predicate *is* the validation |
 | 5. Output / ranking | **Not started** | Clip dedup now tractable via `team_possession_id` |
 
@@ -79,10 +80,13 @@ preserved behaviour.
 
 ## 3. Current results on the test set
 
-**59 exact · 14 approximate · 7 unresolved** (from 47 / 22 / 11).
+**60 exact · 14 approximate · 6 unresolved** (from 47 / 22 / 11).
 
-Two of those exacts (Q68, Q70) are resolved by phase-2 tracking rather than event filters —
-the first real proof that the lazy Tier 3 design works end to end.
+Three of those exacts (Q66, Q68, Q70) are resolved by phase-2 tracking rather than event
+filters. **Negative/absence — the weakest category in the first pass at 4 exact / 5
+approximate / 1 unresolved — is now fully resolved at 7 / 3 / 0**, which is the clearest
+evidence the lazy Tier 3 design works: that category is weak precisely where events record
+what happened rather than what did not.
 
 | Category | exact | approx | unresolved |
 |---|---|---|---|
@@ -92,7 +96,7 @@ the first real proof that the lazy Tier 3 design works end to end.
 | 4. Sequence | 9 | 2 | 0 |
 | 5. Game-state | 9 | 1 | 0 |
 | 6. Comparative | 5 | 3 | 2 |
-| 7. Negative/absence | 6 | 3 | 1 |
+| 7. Negative/absence | **7** | 3 | **0** |
 | 8. Composite | 4 | 1 | 1 |
 
 Every category has a majority resolved, and the two weakest (Negative/absence, Comparative)
@@ -105,10 +109,10 @@ event rows only partly express.
 |---|---|---|
 | 5, 78 | captain | External roster data — not in SkillCorner at all |
 | 17, 56, 59 | block shape, dragged out of position, foot race | Tier 3 tracking |
-| 66 | "tracked back" | Tier 3 tracking (no defensive-run tag exists) |
+| ~~66~~ | ~~"tracked back"~~ | **resolved** - `scripts/defensive.py` |
 | 27 | offside calls | **Nothing.** Tracking gives offside *positions*, never referee *calls* |
 
-**The 16 approximate** (6, 7, 18, 25, 36, 44, 48, 55, 57, 62, 67, 68, 69, 70, 74, 79) split
+**The 14 approximate** (6, 7, 18, 25, 36, 44, 48, 55, 57, 62, 67, 69, 74, 79) split
 roughly into: semantic narrowing where the coach's concept is finer than any available flag
 (through ball, cutback, "game management"), set-piece geometry that Tier 3 will make exact
 (68, 70), cover-rotation geometry (69), and unverifiable counterfactuals (67, 74).
@@ -182,7 +186,21 @@ working-style note in `CLAUDE.md`.
   per (team, period). This is the single most likely source of silent wrong answers in
   Tier 3 and must be resolved by measurement, not assumption.
 
-### 4e. Dtype fragility — a latent version of 4a
+### 4e. Tracking measurement traps
+
+Three bugs found while building phase-2 predicates, all the same family: an arithmetic
+mistake that produces plausible-looking output rather than an error.
+
+| Bug | Symptom | How it was caught |
+|---|---|---|
+| `sample_frames(lo, hi, 1)` returns the window MIDPOINT; the reference predicate took the first frame in the window | Silently measured the middle of an event instead of its start - ~1.2s of sprinting for an off-ball run | Self-test agreement stuck at 95.7%, with `source_gap = 0.000000` rows that should have been exact |
+| Blanket 70% coverage gate applied to set-piece windows | Rejected **79% of corners** before the predicate ran; a corner window legitimately spans dead-ball setup | Only 21% of corners resolved, against 92% delivery detection measured separately |
+| `np.convolve(..., mode="same")` zero-pads when smoothing | Position collapses toward the origin at window edges: a player at x=30 appears to move 30m in 0.1s | Median "peak speed" of **245 km/h** - the distribution was checked before thresholding |
+
+What they share: **look at the distribution of a derived quantity before using it as a
+filter.** Two of the three were invisible in the pass/fail outcome and obvious in the spread.
+
+### 4f. Dtype fragility — a latent version of 4a
 
 The raw CSVs produce **130 object-dtype columns costing 635 MB in memory, 58 of them
 booleans**. They currently hold real Python `bool` values (NaN forces object dtype), so
@@ -197,7 +215,7 @@ is failure mode 4a again, with a different trigger and a much wider blast radius
 — booleans to nullable `boolean`, low-cardinality strings to `category`. Result: **635 MB →
 210 MB, 130 object columns → 11**, and downstream code no longer needs `_as_bool()`.
 
-### 4f. Infrastructure
+### 4g. Infrastructure
 
 - Tracking was recorded as blocked on Git LFS. It is not — `git lfs pull` works anonymously.
   All 20 matches, 1.82 GB.
@@ -251,14 +269,16 @@ is failure mode 4a again, with a different trigger and a much wider blast radius
    Q68 is returned **ranked by closest approach to the near post rather than thresholded**,
    because a fixed zone moves the answer between 12% and 48% (`--sensitivity`) — ranking has
    no arbitrary cutoff and stage 5 needs ranking anyway.
-5. **Thin eager base** — cheap per-frame scalars + per-team baselines (~40s build).
-6. **Recovery runs** → Q66 unresolved → resolved; gives the whole test set a
-   defensive-work vocabulary it currently lacks.
+5. ~~**Recovery runs**~~ — **done.** Q66 resolved (`scripts/defensive.py`), also ranked
+   rather than thresholded. Gives the test set a defensive-work vocabulary the event schema
+   lacks entirely.
+6. **Thin eager base** — cheap per-frame scalars + per-team baselines (~40s build).
 7. **Team shape** → Q17. **Dyadic** → Q59, then Q56 (hardest, most parameter-sensitive;
    prototype on one match).
 
-Projected ceiling once Tier 3 lands: **~64 exact, ~13 approximate, 3 unresolved** (captain
-×2 plus offside).
+Projected ceiling once the remaining Tier 3 work lands: **~63 exact, ~14 approximate,
+3 unresolved** (captain x2 plus offside). Q17, Q56 and Q59 are the three still blocked, all
+on team-shape or dyadic geometry.
 
 ### In parallel — the actual product gap
 8. **Stage 2, the query-parsing chain.** Still zero code. Needs: the gate ordering and

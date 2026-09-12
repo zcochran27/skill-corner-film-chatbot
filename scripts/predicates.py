@@ -69,6 +69,20 @@ class EventContext:
     pitch_width: float = 68.0
     row: object = None          # the full event row, for predicates that need more
     teams: dict = field(default_factory=dict)   # {player_id: team_id} for this match
+    positions: dict = field(default_factory=dict)   # {player_id: position} for this match
+
+    def players_at(self, players: dict, position: str | tuple,
+                   own_team: bool = True) -> dict:
+        """Of a {player_id: (x, y)} map, those playing a given position (or positions).
+
+        Tracking carries neither team nor position, so "the winger" / "the back four" can
+        only be resolved through this lookup from the Silver players table.
+        """
+        want = {position} if isinstance(position, str) else set(position)
+        side = self.team_id
+        return {p: xy for p, xy in players.items()
+                if self.positions.get(p) in want
+                and ((self.teams.get(p) == side) == own_team)}
 
     def teammates(self, players: dict) -> dict:
         """Of a {player_id: (x, y)} map, those on this event's own team."""
@@ -210,9 +224,11 @@ def evaluate(candidates: pd.DataFrame, predicate: Callable, policy: WindowPolicy
     # Tracking identifies players but not their team, so predicates that need to tell
     # attackers from defenders depend on this lookup from the Silver players table.
     team_of: dict = {}
+    pos_of: dict = {}
     if players is not None:
         for r in players.itertuples():
             team_of.setdefault(int(r.match_id), {})[int(r.player_id)] = int(r.team_id)
+            pos_of.setdefault(int(r.match_id), {})[int(r.player_id)] = r.position
 
     out = []
     for n, r in enumerate(candidates.itertuples()):
@@ -230,7 +246,8 @@ def evaluate(candidates: pd.DataFrame, predicate: Callable, policy: WindowPolicy
                            sign=sign,
                            player_id=int(r.player_id) if pd.notna(r.player_id) else None,
                            pitch_length=pl, pitch_width=pw, row=r,
-                           teams=team_of.get(mid, {}))
+                           teams=team_of.get(mid, {}),
+                           positions=pos_of.get(mid, {}))
         win = fetch_for(ctx, policy)
         threshold = (policy.min_coverage if policy.min_coverage is not None
                      else MIN_COVERAGE)
