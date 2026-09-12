@@ -11,6 +11,21 @@ matches (not 10; the upstream repo has grown since this project started) of broa
 tracking data (10 fps) plus SkillCorner's derived Dynamic Events and Phases of Play
 datasets. No film/video files are involved anywhere in this project.
 
+## Answerability (MANDATED)
+**When the data cannot answer a question, the app says so. It never substitutes the nearest
+proxy and presents it as the real thing.** See `docs/answerability.md`; the registry and the
+verbatim user-facing text live in `scripts/answerability.py`.
+- `no_data` (captain, offside calls) - refuse permanently, explain why, offer the nearest
+  answerable alternative.
+- `not_implemented` (dragged out of position, foot race) - refuse *for now*; the data
+  supports it, so do not make a permanent-sounding promise.
+- `approximate` (14 questions) - answer, but **disclose the proxy alongside the results**.
+- `ranked` (Q17, Q66, Q68) - return an ordering; never phrase it as a filtered set, since
+  that smuggles in a threshold that was never measured.
+- `insufficient_data` - report as coverage, **never** fold into the answer set. Absence is a
+  positive answer for the negative/absence gate, so the two must stay distinct.
+Stage 2 must call `answerability.check(concept)` before emitting filters.
+
 ## Data architecture (MANDATED)
 All data lives in a bronze/silver/gold medallion layout — see `docs/data_architecture.md`
 for the full contract. The rules are not optional:

@@ -1,0 +1,198 @@
+#!/usr/bin/env python
+"""
+What the app can and cannot answer, and what it must say when it cannot.
+
+The rule this enforces: **never silently substitute.** If a coach asks for something the
+data does not contain, the answer is "I can't answer that, and here is why" - not the
+nearest available proxy dressed up as the real thing.
+
+This matters more here than in most retrieval systems. A coach acts on these clips. An
+answer that looks like 20 offside calls but is actually 20 moments a player stood in an
+offside position is worse than no answer, because nothing in the output reveals the
+substitution. That is the response-layer twin of the silent-zero bug that has bitten this
+project five separate times (docs/master_plan.md 4a): plausible output, no error, wrong
+conclusion.
+
+Three verdicts, three behaviours:
+
+  NO_DATA          The concept is absent from every available source and always will be.
+                   Refuse, explain, and offer the nearest thing that IS answerable.
+  NOT_IMPLEMENTED  The data exists but the retrieval for it has not been built.
+                   Say so plainly - it is a different promise from NO_DATA.
+  APPROXIMATE      Answerable only through a documented proxy. Answer, but DISCLOSE the
+                   proxy in the response; never present it as exact.
+
+Anything not listed here is answerable exactly, which is the default for 61 of the 80
+test-set questions.
+
+Usage:
+    from answerability import check, Verdict
+    v = check("captain")
+    if v and v.kind == "no_data":
+        return v.say          # the user-facing refusal
+
+    python scripts/answerability.py          # print the registry
+"""
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+
+NO_DATA = "no_data"
+NOT_IMPLEMENTED = "not_implemented"
+APPROXIMATE = "approximate"
+
+
+@dataclass(frozen=True)
+class Verdict:
+    concept: str
+    kind: str
+    why: str          # for logs and for developers
+    say: str          # verbatim user-facing text
+    nearest: str | None = None      # the closest answerable alternative, if any
+    questions: tuple = ()           # test-set questions this blocks
+
+
+#: Concepts no source in this project contains. These do not become answerable by building
+#: more retrieval - they need a different dataset, or they are not in any dataset at all.
+NO_DATA_GAPS = {
+    "captain": Verdict(
+        concept="captain",
+        kind=NO_DATA,
+        why="_match.json's player_role holds a POSITION (RW, GK, SUB), never an armband "
+            "flag, and no dynamic-events column encodes captaincy. Not derivable.",
+        say="I can't answer that — I don't know who the captain is. SkillCorner's data "
+            "records each player's position but never who wore the armband, so there's "
+            "nothing for me to filter on.",
+        nearest="Ask for a named player or a shirt number instead, and I can answer the "
+                "same question exactly.",
+        questions=(5, 78),
+    ),
+    "offside_call": Verdict(
+        concept="offside_call",
+        kind=NO_DATA,
+        why="An offside CALL is a referee decision, and there is no referee-event feed. "
+            "Tracking can show a player beyond the second-last defender at the moment of "
+            "a pass, which is an offside POSITION - a different and much more common thing.",
+        say="I can't answer that — offside calls are referee decisions, and I have no "
+            "record of them. I'd be guessing, and I'd guess wrong often: most players in "
+            "an offside position are never flagged.",
+        nearest="I can show players in an offside position at the moment of a pass. That's "
+                "a different question — it includes plenty of moments where play "
+                "continued — but it may be what you're after.",
+        questions=(27,),
+    ),
+}
+
+#: Concepts the data supports but the retrieval for has not been built yet. These are
+#: promises the app can keep later, so say so rather than implying a permanent gap.
+NOT_IMPLEMENTED_GAPS = {
+    "dragged_out_of_position": Verdict(
+        concept="dragged_out_of_position",
+        kind=NOT_IMPLEMENTED,
+        why="Needs a per-player positional baseline plus a lead/lag test showing the "
+            "forward moved first. Tracking supports it; the predicate is not built.",
+        say="I can't answer that yet. The tracking data supports it, but I haven't built "
+            "the measurement for whether a defender was pulled out of position — and "
+            "specifically whether the attacker's movement caused it.",
+        nearest="I can show you a centre back's engagements against a given striker, which "
+                "covers some of the same moments.",
+        questions=(56,),
+    ),
+    "foot_race": Verdict(
+        concept="foot_race",
+        kind=NOT_IMPLEMENTED,
+        why="Needs synchronised two-player velocity over a shared window. Tracking "
+            "supports it; the predicate is not built.",
+        say="I can't answer that yet. It needs a side-by-side speed comparison between two "
+            "specific players over the same few seconds, which I haven't built.",
+        nearest="I can show balls played in behind the defensive line, which is where most "
+                "foot races start.",
+        questions=(59,),
+    ),
+}
+
+#: Concepts answerable only through a documented proxy. Answering is fine; answering
+#: WITHOUT saying so is not. The `say` text is a disclosure to attach to the results, not
+#: a refusal.
+APPROXIMATE_CONCEPTS = {
+    "through_ball": Verdict(
+        concept="through_ball", kind=APPROXIMATE,
+        why="No through-ball tag exists; approximated as a line-breaking pass.",
+        say="There's no 'through ball' tag in the data, so these are line-breaking passes "
+            "from the final third — close, but broader than a true through ball.",
+        questions=(25,)),
+    "cutback": Verdict(
+        concept="cutback", kind=APPROXIMATE,
+        why="No cutback tag; approximated as a pass reception inside the box without "
+            "confirming the pass came from wide and behind the defence.",
+        say="These are receptions in the box from a pass. I can't confirm the pass came "
+            "from the byline, so some of these won't be true cutbacks.",
+        questions=(18,)),
+    "game_management": Verdict(
+        concept="game_management", kind=APPROXIMATE,
+        why="No tag; approximated as late throw-in receptions and keep-possession events.",
+        say="'Game management' isn't tagged, so these are slow restarts and keep-ball "
+            "events after the 80th minute — a reasonable stand-in, not the concept itself.",
+        questions=(48,)),
+    "duel_won": Verdict(
+        concept="duel_won", kind=APPROXIMATE,
+        why="No duel outcome; approximated as a pressing chain that ended in a regain.",
+        say="There's no duel win/loss flag, so 'won' here means the pressing sequence ended "
+            "with the ball recovered.",
+        questions=(62,)),
+    "numerical_advantage": Verdict(
+        concept="numerical_advantage", kind=APPROXIMATE,
+        why="Approximated as zero opponents ahead of the ball at possession end.",
+        say="'Numerical advantage' is approximated as having no opponents goalside at the "
+            "end of the possession — it doesn't count the full attacking overload.",
+        questions=(67, 74)),
+}
+
+ALL_GAPS = {**NO_DATA_GAPS, **NOT_IMPLEMENTED_GAPS, **APPROXIMATE_CONCEPTS}
+
+
+def check(concept: str) -> Verdict | None:
+    """The verdict for a concept, or None when it is answerable exactly."""
+    return ALL_GAPS.get(concept)
+
+
+def blocked_questions() -> dict:
+    """{question_id: Verdict} for every test-set question a gap blocks."""
+    return {q: v for v in ALL_GAPS.values() for q in v.questions}
+
+
+def format_refusal(v: Verdict) -> str:
+    """The full user-facing message for a concept that cannot be answered."""
+    if v.kind == APPROXIMATE:
+        raise ValueError(f"{v.concept} is answerable; disclose `say`, do not refuse")
+    return v.say + (f"\n\n{v.nearest}" if v.nearest else "")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--concept", help="show the verdict for one concept")
+    args = ap.parse_args()
+
+    if args.concept:
+        v = check(args.concept)
+        print(f"{args.concept}: answerable exactly" if v is None
+              else f"[{v.kind}] {v.concept}\n\n{v.say}"
+                   + (f"\n\n{v.nearest}" if v.nearest else ""))
+        return
+
+    for title, group in [("NO DATA - refuse, permanently", NO_DATA_GAPS),
+                         ("NOT IMPLEMENTED - refuse, for now", NOT_IMPLEMENTED_GAPS),
+                         ("APPROXIMATE - answer, but disclose", APPROXIMATE_CONCEPTS)]:
+        print(f"\n=== {title} ===")
+        for v in group.values():
+            qs = ", ".join(f"Q{q}" for q in v.questions)
+            print(f"\n  {v.concept}  ({qs})")
+            print(f"    why : {v.why}")
+            print(f"    say : {v.say}")
+            if v.nearest:
+                print(f"    alt : {v.nearest}")
+
+
+if __name__ == "__main__":
+    main()

@@ -8,6 +8,7 @@ Single entry point for where this project stands. Start here, then follow the li
 | `coach_question_test_set.md` | The 80-question test set everything is measured against |
 | `skillcorner_schema.md` | Reference schema (treat as a guide, not ground truth — see §4) |
 | `docs/real_data_validation.md` | The first two validation passes (superseded numbers; see §5) |
+| `docs/answerability.md` | **Mandated** — what to say when the data cannot answer |
 | `docs/data_architecture.md` | **Mandated** bronze/silver/gold layout and layer contracts |
 | `docs/enrichment.md` | Tier 1 + Tier 2 enrichment, built and validated |
 | `docs/field_catalog.md` | Generated event_type × column availability map |
@@ -108,6 +109,7 @@ event rows only partly express.
 | # | Question | Blocked on |
 |---|---|---|
 | 5, 78 | captain | External roster data — not in SkillCorner at all |
+| — | *(all five now have registered refusal text — see `docs/answerability.md`)* | |
 | ~~17~~ | ~~block shape~~ | **resolved from phases, no tracking needed** - see 4h |
 | 56, 59 | dragged out of position, foot race | Tier 3 tracking (dyadic) |
 | ~~66~~ | ~~"tracked back"~~ | **resolved** - `scripts/defensive.py` |
@@ -305,8 +307,10 @@ player-pair geometry.
 
 ### In parallel — the actual product gap
 8. **Stage 2, the query-parsing chain.** Still zero code. Needs: the gate ordering and
-   dependencies (undecided), a per-gate "does this apply?" self-report, and the
-   `validate_filter` guardrail from §4a so a hallucinated column fails loudly.
+   dependencies (undecided), a per-gate "does this apply?" self-report, the
+   `validate_filter` guardrail from §4a so a hallucinated column fails loudly, and an
+   `answerability.check(concept)` call before any filter is emitted so unanswerable
+   questions are refused rather than silently proxied (`docs/answerability.md`).
 9. **Stage 5, ranking and clip dedup.** `team_possession_id` gives the grouping and Tier 3
    evidence frames give in/out points — most of a clip segmenter now exists. Ranking logic
    itself is still undecided.
