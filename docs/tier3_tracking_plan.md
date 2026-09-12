@@ -5,7 +5,7 @@ remaining 7 unresolved questions split into three groups, only one of which Tier
 
 | Group | Questions | Tier 3? |
 |---|---|---|
-| Multi-player geometry | 17, 56, 59 | **Yes** — this is what Tier 3 is for |
+| Multi-player geometry | ~~17~~, 56, 59 | Partly - **Q17 turned out to need no tracking at all**; `_phases_of_play.csv` already carries per-phase team width/length. See `docs/master_plan.md` 4h. |
 | Untagged concepts | 27 (offside), 66 ("tracked back") | Partly — 66 yes, 27 only as a proxy |
 | External data | 5, 78 (captain) | No — needs a roster source SkillCorner doesn't ship |
 

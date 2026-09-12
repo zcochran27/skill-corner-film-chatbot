@@ -24,10 +24,56 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from enrich import (  # noqa: E402
-    DERIVED_COLUMNS, GOLD, build_enriched, load_silver,
+    DERIVED_COLUMNS, GOLD, SILVER, build_enriched, load_silver,
 )
 
 FPS = 10.0
+
+
+def build_phase_shape(phases: pd.DataFrame) -> pd.DataFrame:
+    """Phases plus team-shape measures expressed against each team's OWN norm.
+
+    _phases_of_play.csv carries team_in/out_of_possession_width and _length per phase -
+    columns that exist nowhere in the events table. They were never examined because the
+    first validation pass concluded phases were redundant ("phase context is already inlined
+    on every dynamic-events row"), which is true of the phase TYPE but not of these.
+
+    They behave exactly as football predicts, which is the check that they mean what they
+    say: median out-of-possession width runs 22.8m defending a set play, 34.1m in a low
+    block, 36.3m medium, 37.1m high, and 50.2m defending a quick break.
+
+    "Compressed into a narrow shape" (Q17) is relative, not absolute - a 34m block is tight
+    for one side and normal for another - so width is converted to a percentile within the
+    same team's distribution for the same phase type. That is a corpus statistic, which is
+    why it belongs in Gold and cannot be computed lazily per candidate.
+    """
+    ph = phases.copy()
+
+    # The out-of-possession measures describe the team NOT in possession, so name that team
+    # explicitly rather than leaning on team_in_possession_id to imply it.
+    two = (ph.groupby("match_id")["team_in_possession_id"]
+           .apply(lambda s: sorted(s.dropna().unique())).to_dict())
+    ph["defending_team_id"] = [
+        next((t for t in two.get(m, []) if t != p), None)
+        for m, p in zip(ph.match_id, ph.team_in_possession_id)
+    ]
+
+    # Baselines are per TEAM across all their matches, not per match: a single match gives
+    # only ~50-150 phases per team per type, and "narrow for them" should mean narrow
+    # against how that side usually sets up, not against one game's spread.
+    specs = [("out_of_possession", "defending_team_id",
+              "team_out_of_possession_phase_type"),
+             ("in_possession", "team_in_possession_id",
+              "team_in_possession_phase_type")]
+    for side, team_col, type_col in specs:
+        col = f"team_{side}_width_end"
+        if col not in ph.columns:
+            continue
+        g = ph.groupby([team_col, type_col], observed=True)[col]
+        ph[f"{side}_width_pctile"] = g.rank(pct=True)
+        ph[f"{side}_width_z"] = (ph[col] - g.transform("mean")) / g.transform("std")
+        ph[f"{side}_width_baseline"] = g.transform("median")
+    return ph
 
 
 def build_possession_chains(events: pd.DataFrame) -> pd.DataFrame:
@@ -55,7 +101,10 @@ def build_possession_chains(events: pd.DataFrame) -> pd.DataFrame:
 def main() -> None:
     print("[gold] reading silver ...")
     events, matches, players = load_silver()
-    print(f"[gold] {len(events):,} events, {len(matches)} matches, {len(players)} players")
+    phases_path = SILVER / "phases.parquet"
+    phases = pd.read_parquet(phases_path) if phases_path.exists() else pd.DataFrame()
+    print(f"[gold] {len(events):,} events, {len(matches)} matches, "
+          f"{len(players)} players, {len(phases):,} phases")
 
     events, goals = build_enriched(events, matches, players, verbose=True)
     chains = build_possession_chains(events)
@@ -68,6 +117,11 @@ def main() -> None:
     events.to_parquet(GOLD / "events_enriched.parquet", index=False)
     goals.to_parquet(GOLD / "goals.parquet", index=False)
     chains.to_parquet(GOLD / "possession_chains.parquet", index=False)
+    if len(phases):
+        phase_shape = build_phase_shape(phases)
+        phase_shape.to_parquet(GOLD / "phase_shape.parquet", index=False)
+        print(f"[gold] phase_shape {len(phase_shape):,} phases with team-relative "
+              f"width percentiles")
 
     total = sum(f.stat().st_size for f in GOLD.rglob("*") if f.is_file())
     print(f"[gold] events_enriched {events.shape[0]:,} x {events.shape[1]} "

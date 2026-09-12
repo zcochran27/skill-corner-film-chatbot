@@ -339,7 +339,7 @@ warehouse for the eager design — while removing the two cons that would otherw
    most "player failed to do X" questions.
 6. **Eager scalar base + baselines** (§5) — once two or three predicates exist and it is
    clear which scalars actually get reused.
-7. **Team shape (Q17)**, then **dyadic (Q59, then Q56)** — hardest and most
+7. ~~**Team shape (Q17)**~~ - resolved from `_phases_of_play.csv` without tracking. Then **dyadic (Q59, then Q56)** - hardest and most
    parameter-sensitive; prototype on one match and eyeball the output before trusting it.
 
 Per the project's stated habit, check each stage against the test set before starting the

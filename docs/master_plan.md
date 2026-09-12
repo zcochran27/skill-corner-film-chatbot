@@ -80,7 +80,7 @@ preserved behaviour.
 
 ## 3. Current results on the test set
 
-**60 exact · 14 approximate · 6 unresolved** (from 47 / 22 / 11).
+**61 exact · 14 approximate · 5 unresolved** (from 47 / 22 / 11).
 
 Three of those exacts (Q66, Q68, Q70) are resolved by phase-2 tracking rather than event
 filters. **Negative/absence — the weakest category in the first pass at 4 exact / 5
@@ -91,7 +91,7 @@ what happened rather than what did not.
 | Category | exact | approx | unresolved |
 |---|---|---|---|
 | 1. Player-specific | 8 | 2 | 1 |
-| 2. Spatial | 9 | 1 | 1 |
+| 2. Spatial | **10** | 1 | **0** |
 | 3. Event-type | 9 | 1 | 1 |
 | 4. Sequence | 9 | 2 | 0 |
 | 5. Game-state | 9 | 1 | 0 |
@@ -108,7 +108,8 @@ event rows only partly express.
 | # | Question | Blocked on |
 |---|---|---|
 | 5, 78 | captain | External roster data — not in SkillCorner at all |
-| 17, 56, 59 | block shape, dragged out of position, foot race | Tier 3 tracking |
+| ~~17~~ | ~~block shape~~ | **resolved from phases, no tracking needed** - see 4h |
+| 56, 59 | dragged out of position, foot race | Tier 3 tracking (dyadic) |
 | ~~66~~ | ~~"tracked back"~~ | **resolved** - `scripts/defensive.py` |
 | 27 | offside calls | **Nothing.** Tracking gives offside *positions*, never referee *calls* |
 
@@ -185,6 +186,27 @@ working-style note in `CLAUDE.md`.
 - **Tracking is absolute, events are mirrored, and the sign flips at halftime** — measured
   per (team, period). This is the single most likely source of silent wrong answers in
   Tier 3 and must be resolved by measurement, not assumption.
+
+### 4h. A whole file was dismissed as redundant
+
+Q17 ("midfield block compressed into a narrow shape") sat as unresolved-needs-tracking
+through three planning documents, including my own Tier 3 plan, which listed it as the
+tractable *team-shape geometry* item.
+
+It needs no tracking. `_phases_of_play.csv` carries `team_in/out_of_possession_width` and
+`_length` per phase - columns that exist **nowhere in the events table**. They were never
+looked at because the first validation pass concluded phases were redundant: *"phase context
+is already inlined on every dynamic-events row"*. That is true of the phase **type** and
+false of these measures, and the file was then skipped in every later pass.
+
+The columns behave exactly as football predicts, which is the check that they mean what they
+claim: median out-of-possession width runs 22.8m defending a set play, 34.1m low block,
+36.3m medium, 37.1m high, 50.2m defending a quick break.
+
+Q17 now resolves in **3.9ms** as a phase-level query against a per-team baseline, versus the
+1.5-7s a tracking predicate costs. **Same lesson as 4b, one level up: the earlier conclusion
+was about a whole data source rather than a single field, so nothing re-examined it.** Before
+building expensive machinery, re-check what the cheap sources actually contain.
 
 ### 4e. Tracking measurement traps
 
@@ -277,8 +299,8 @@ is failure mode 4a again, with a different trigger and a much wider blast radius
    prototype on one match).
 
 Projected ceiling once the remaining Tier 3 work lands: **~63 exact, ~14 approximate,
-3 unresolved** (captain x2 plus offside). Q17, Q56 and Q59 are the three still blocked, all
-on team-shape or dyadic geometry.
+3 unresolved** (captain x2 plus offside). Only Q56 and Q59 are still blocked, both on dyadic
+player-pair geometry.
 
 ### In parallel — the actual product gap
 8. **Stage 2, the query-parsing chain.** Still zero code. Needs: the gate ordering and

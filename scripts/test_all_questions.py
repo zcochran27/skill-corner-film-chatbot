@@ -40,6 +40,7 @@ from defensive import (  # noqa: E402
 )
 
 SILVER = Path(__file__).resolve().parent.parent / "data" / "silver"
+GOLD = Path(__file__).resolve().parent.parent / "data" / "gold"
 
 
 def load_events() -> tuple[pd.DataFrame, int]:
@@ -62,6 +63,7 @@ def main() -> None:
     TRACKED = set(available_matches())
     roster_full = pd.read_parquet(SILVER / "players.parquet")
     matches = pd.read_parquet(SILVER / "matches.parquet")
+    phase_shape = pd.read_parquet(GOLD / "phase_shape.parquet")
 
     PP = events[events.event_type == "player_possession"]
     OBR = events[events.event_type == "off_ball_run"]
@@ -130,8 +132,21 @@ def main() -> None:
         lambda: OBR[(OBR.event_subtype == "cross_receiver") & (OBR.channel_start.isin(["wide_left", "wide_right"]))])
     add(16, "Spatial", "exact", "player_position, x_start, n_teammates_ahead_start",
         "", lambda: events[(events.player_position.isin(FB)) & (events.x_start > 10) & (events.n_teammates_ahead_start <= 1)])
-    add(17, "Spatial", "unresolved", "-",
-        "'block shape/width' is a team-shape metric over simultaneous player positions - needs raw tracking frames, not per-event rows", None)
+    def q17():
+        """Phase-level: medium blocks that were narrow against that team's OWN norm."""
+        mb = phase_shape[(phase_shape.team_out_of_possession_phase_type == "medium_block")
+                         & phase_shape.out_of_possession_width_z.notna()]
+        return mb.sort_values("out_of_possession_width_z")
+    add(17, "Spatial", "exact (phase-level, ranked)",
+        "team_out_of_possession_width_end + per-team baseline (gold/phase_shape.parquet)",
+        "NOT a tracking question after all. _phases_of_play.csv carries "
+        "team_out_of_possession_width/length per phase - columns that exist nowhere in the "
+        "events table and were never examined, because the first pass concluded phases were "
+        "redundant (true of the phase TYPE, not of these). Width is converted to a z-score "
+        "against that team's own distribution for the same phase type, since 'narrow' is "
+        "relative - a 34m block is tight for one side and normal for another. Ranked "
+        "ascending; the tightest are 15-20m against team baselines of 35-38m.",
+        q17)
     add(18, "Spatial", "approximate", "penalty_area_start, start_type",
         "'cutback' approximated as a pass reception inside the box following a pass, without confirming the pass originated wide/behind the defense",
         lambda: PP[(PP.penalty_area_start == True) & (PP.start_type == "pass_reception")])
