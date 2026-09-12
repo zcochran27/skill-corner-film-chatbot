@@ -165,8 +165,23 @@ real questions only touch 2-4 of the 8 categories.
 - **Sample frames within the window.** Convex hull on 50 frames x 156 candidates = 4.9s; at
   5 frames per window, 0.5s. Sample density is a per-predicate parameter.
 
+## Query-parsing chain (stage 2) - gate ordering DECIDED
+`scripts/query_parse.py`. Ordering is **shape -> subject -> conditions**:
+1. **negative/absence** - inverts the query into an anti-join, so it changes the structure
+   and must be known before anything is built.
+2. **sequence** - event-level or chain-level grain.
+3. **event type** - decides which COLUMNS EXIST downstream (168 of 354 columns are populated
+   on exactly one event_type), so every later field-emitting gate depends on it.
+4. **player/role**, then 5. **spatial**, 6. **temporal**, 7. **comparative** (needs the
+   subject), 8. **outcome** (needs the grain).
+
+Every gate is optional and self-reporting: it first decides whether its dimension is present
+at all, and emits nothing if not - inventing a condition silently narrows the coach's
+results. Two guardrails run inside the chain: `answerability.check()` before any filter is
+emitted, and `query_schema.validate_filter()` on every filter, which rejects a column that
+is null for the event type it targets.
+
 ## Open / not yet decided
-- Exact ordering/dependency of the 8 gates within the parsing chain.
 - Validation stage design.
 - Clip ranking logic — now more concrete since `scripts/test_all_questions.py` reports raw
   event/row hit counts, not deduplicated clips; still need to decide how multiple matching

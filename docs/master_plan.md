@@ -21,6 +21,8 @@ Single entry point for where this project stands. Start here, then follow the li
 | `scripts/defensive.py` | Phase-2 recovery runs: Q66 (`--distribution`) |
 | `scripts/dyadic.py` | Phase-2 two-player predicates: Q56, Q59 (`--distribution`) |
 | `scripts/tracking_base.py` | Eager per-player positional baselines (Gold) |
+| `scripts/query_parse.py` | Stage 2: the 8-gate parsing chain (`--offline`, `--test-set`) |
+| `scripts/query_schema.py` | Per-gate field vocabulary + `validate_filter()` guardrail |
 | `docs/test_results_enriched.md` | Current full 80-question run output |
 
 ---
@@ -33,17 +35,17 @@ Single entry point for where this project stands. Start here, then follow the li
 |---|---|---|
 | 0. Data layers | **Built** | Bronze/silver/gold mandated; consumer load 9.8s -> 0.73s |
 | 1. Preprocessing / enrichment | **Built** | `enrich.py` derivations applied by `build_gold.py`, 32 derived columns |
-| 2. Query parsing (8 gates) | **Not started** | No code turns free text into a structured query yet |
+| 2. Query parsing (8 gates) | **Built, unverified** | `query_parse.py` - chain + both guardrails work offline; needs an API key to validate real extraction |
 | 3. Retrieval — phase 1 (events) | **Built** | Median 5ms, max 75ms across 73 timed questions |
 | 3. Retrieval — phase 2 (tracking) | **Working** | Q66/Q68/Q70 exact via tracking; 1.6-7.0s vs a 7.7ms event-filter median |
 | 4. Validation | **Designed** | Folded into phase 2: the predicate *is* the validation |
 | 5. Output / ranking | **Not started** | Clip dedup now tractable via `team_possession_id` |
 
-**The largest gap is stage 2, not tracking.** Every result so far comes from a hand-written
-query for a known test-set question. Nothing yet converts a coach's sentence into the 8-gate
-structured form. The enrichment work has been about making sure there is something *worth*
-parsing into — that is now true, and stage 2 is the thing standing between this and a
-working product.
+**Stage 2 is now built but unverified.** `scripts/query_parse.py` implements the chain,
+the gate ordering, and both guardrails, and runs end to end against all 80 questions with an
+offline keyword stub. What it has NOT had is a single real LLM call — that needs an
+`ANTHROPIC_API_KEY`. Until then, nothing is known about extraction quality; only the
+plumbing is proven.
 
 ---
 
@@ -337,11 +339,13 @@ further is buildable without new data: captain needs an external roster source
 exist.
 
 ### In parallel — the actual product gap
-8. **Stage 2, the query-parsing chain.** Still zero code. Needs: the gate ordering and
-   dependencies (undecided), a per-gate "does this apply?" self-report, the
-   `validate_filter` guardrail from §4a so a hallucinated column fails loudly, and an
-   `answerability.check(concept)` call before any filter is emitted so unanswerable
-   questions are refused rather than silently proxied (`docs/answerability.md`).
+8. ~~**Stage 2, the query-parsing chain.**~~ **Built** (`scripts/query_parse.py`): gate
+   ordering decided (shape -> subject -> conditions, see CLAUDE.md), per-gate "does this
+   apply?" self-report, `validate_filter` rejecting hallucinated or mis-targeted columns,
+   and `answerability.check()` refusing before any filter is emitted. **Not yet verified
+   against a real model** - needs an `ANTHROPIC_API_KEY`. The next step is an accuracy pass:
+   parse all 80 questions with `claude-opus-5` and compare the emitted filters against the
+   hand-written queries in `test_all_questions.py`, which are the ground truth.
 9. **Stage 5, ranking and clip dedup.** `team_possession_id` gives the grouping and Tier 3
    evidence frames give in/out points — most of a clip segmenter now exists. Ranking logic
    itself is still undecided.
