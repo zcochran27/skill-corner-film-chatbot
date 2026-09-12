@@ -98,12 +98,30 @@ class Window:
     def sufficient(self) -> bool:
         return self.coverage >= MIN_COVERAGE
 
+    def frame_at(self, frame_number: int) -> dict | None:
+        """The frame with this exact number, or None.
+
+        Predicates that mean a specific instant ("where was he when the event started")
+        MUST use this rather than taking the first frame in the window: a sampled policy
+        does not necessarily include the endpoints, and even a full window spans the whole
+        event, over which a sprinting player moves several metres.
+        """
+        for f in self.frames:
+            if f.get("frame") == frame_number:
+                return f
+        return None
+
     def __len__(self) -> int:
         return len(self.frames)
 
 
 def sample_frames(lo: int, hi: int, n: int) -> list[int]:
-    """n evenly spaced frame numbers across [lo, hi] inclusive."""
+    """n evenly spaced frame numbers across [lo, hi] inclusive.
+
+    NOTE n == 1 gives the MIDPOINT, not the start. That is the right sample for "what was
+    the shape during this event", and the wrong one for "where was he when it started" -
+    use Window.frame_at(ctx.frame_start) for the latter.
+    """
     if n <= 0 or hi < lo:
         return []
     if n == 1:

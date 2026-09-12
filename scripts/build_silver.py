@@ -10,7 +10,7 @@ Silver's job is to make the data *trustworthy and cheap to load*, not to add ana
   - cast dtypes properly (the 58 boolean columns arrive as object; low-cardinality strings
     become categories) - this is where 635 MB becomes something far smaller
   - flatten _match.json into match and player entity tables
-  - build the tracking frame index needed for Tier 3's lazy sweep
+  - build the tracking frame index and mirror-sign table needed for Tier 3's lazy sweep
   - run the validation gates, and FAIL rather than write a bad table
 
 No derived analytics here. Those are Gold (scripts/build_gold.py).
@@ -29,6 +29,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 ROOT = Path(__file__).resolve().parent.parent
 BRONZE = ROOT / "data" / "bronze"
@@ -296,6 +298,19 @@ def main() -> None:
     if len(phases):
         phases.to_parquet(SILVER / "phases.parquet", index=False)
     tracking_index.to_parquet(SILVER / "tracking_index.parquet", index=False)
+
+    # Mirror signs depend on the frame index and metadata above, so they are measured last.
+    # Silver owns this for the same reason it owns the frame index: it makes Bronze
+    # readable rather than adding football meaning.
+    if not tracking_index.empty and (tracking_index.status == "ok").any():
+        from mirror_sign import SIGNS_FILE, build_mirror_signs
+        signs = build_mirror_signs(events)
+        if not signs.empty:
+            signs.to_parquet(SIGNS_FILE, index=False)
+            print(f"[silver] mirror signs: {len(signs)} (match, team, period) groups, "
+                  f"min confidence {signs.confidence.min():.0%}")
+    else:
+        print("[silver] mirror signs skipped - no tracking available")
 
     total = sum(f.stat().st_size for f in SILVER.rglob("*") if f.is_file())
     print(f"[silver] wrote {SILVER} ({total / 1e6:.0f} MB)")

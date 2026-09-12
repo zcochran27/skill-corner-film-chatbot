@@ -14,6 +14,8 @@ Single entry point for where this project stands. Start here, then follow the li
 | `docs/tier3_tracking_plan.md` | Tracking prerequisites + metric definitions (§2 superseded) |
 | `docs/tier3_lazy_retrieval_plan.md` | **Adopted Tier 3 design** — lazy per-event confirmation |
 | `scripts/frame_index.py` | Tier 3 random access into tracking (`--benchmark`) |
+| `scripts/mirror_sign.py` | Measured tracking/event coordinate sign per (match, team, period) |
+| `scripts/predicates.py` | Phase-2 predicate harness (`--selftest`) |
 | `docs/test_results_enriched.md` | Current full 80-question run output |
 
 ---
@@ -28,7 +30,7 @@ Single entry point for where this project stands. Start here, then follow the li
 | 1. Preprocessing / enrichment | **Built** | `enrich.py` derivations applied by `build_gold.py`, 32 derived columns |
 | 2. Query parsing (8 gates) | **Not started** | No code turns free text into a structured query yet |
 | 3. Retrieval — phase 1 (events) | **Built** | Median 5ms, max 75ms across 73 timed questions |
-| 3. Retrieval — phase 2 (tracking) | **Foundation built** | `frame_index.py`: window fetch + sampling + coverage. Predicates next |
+| 3. Retrieval — phase 2 (tracking) | **Foundation built** | `frame_index.py` + `mirror_sign.py` + `predicates.py`; chain self-tests at 100%. Real predicates next |
 | 4. Validation | **Designed** | Folded into phase 2: the predicate *is* the validation |
 | 5. Output / ranking | **Not started** | Clip dedup now tractable via `team_possession_id` |
 
@@ -235,11 +237,10 @@ is failure mode 4a again, with a different trigger and a much wider blast radius
    provides window/sampled/at fetches, staleness validation and coverage. Measured on real
    event windows: ~6 ms/window full density, ~0.9 ms sampled, 99.8% coverage. Parsing is
    96% of the cost, so sampling is the dominant optimisation (7x).
-2. **Mirror-sign resolver** — measure `sign(match, team, period)` by regressing event
-   against tracking coordinates; assert on a held-out sample.
-3. **Predicate harness** — the `PredicateResult` contract (matched / value /
-   evidence_frames), coverage handling, session cache, frame sampling. Land before any real
-   metric so all predicates are uniform.
+2. ~~Mirror-sign resolver~~ — **done.** 80 groups at 100% confidence; opposite-signs and
+   halftime-flip invariants both hold.
+3. ~~Predicate harness~~ — **done.** Chain validated end-to-end by reproducing a Gold column
+   from tracking: 100.00% (344/344) on concordant, non-borderline candidates.
 
 ### Then — Tier 3 metrics, cheapest first
 4. **Thin eager base** — cheap per-frame scalars + per-team baselines (~40s build).

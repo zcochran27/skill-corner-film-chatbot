@@ -143,6 +143,27 @@ mapping table earns its place rather than arithmetic:
   Precompute this small table (4,071 chains, one row each) since it is cheap and reused by
   both phase 2 and clip segmentation.
 
+### Data-quality findings from building this
+
+Measured while validating the chain, and load-bearing for every predicate:
+
+- **Event coordinates are not a copy of tracking.** Dynamic Events are "produced by combining
+  SkillCorner Tracking v3 + Wyscout event data", so the two sources are a fusion. Measured:
+  they place the same player >1m apart on **1.3%** of rows, from a mix of player-identity
+  errors (consistent with the documented ~97% identity accuracy), frame alignment, and
+  unexplained residue. Predicates must not assume the event row's x/y and the tracking x/y
+  are interchangeable.
+- **`is_detected=False` means measurably worse.** Extrapolated positions agree with the event
+  table to within 0.5m **88.6%** of the time versus **98.5%** for detected ones, and 13% of
+  player-frames are extrapolated. `signed_players(..., detected_only=True)` trades coverage
+  for precision where that matters.
+- **Anchoring is a live trap.** `sample_frames(lo, hi, 1)` returns the window MIDPOINT, which
+  is right for "what was the shape during this event" and wrong for "where was he when it
+  started". The reference predicate initially took the first frame in the window and was
+  silently measuring the midpoint - for an off-ball run that is ~1.2s of sprinting, several
+  metres, enough to flip the answer. Predicates that mean an instant must use
+  `Window.frame_at(ctx.frame_start)`.
+
 ### [4] Predicate evaluator
 
 One function per geometric concept, with a uniform signature so the query builder can compose
