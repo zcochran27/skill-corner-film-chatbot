@@ -11,6 +11,25 @@ matches (not 10; the upstream repo has grown since this project started) of broa
 tracking data (10 fps) plus SkillCorner's derived Dynamic Events and Phases of Play
 datasets. No film/video files are involved anywhere in this project.
 
+## Data architecture (MANDATED)
+All data lives in a bronze/silver/gold medallion layout — see `docs/data_architecture.md`
+for the full contract. The rules are not optional:
+- `data/bronze/` raw and **immutable**; only `scripts/fetch_match_data.sh` writes there.
+- `data/silver/` cleaned, typed, conformed entity tables (`build_silver.py`). Cleaning and
+  validation only — no football concepts. Validation gates **fail the build**, never warn.
+- `data/gold/` derived, query-ready tables (`build_gold.py` applying `enrich.py`).
+- **Each layer reads only the layer below it.** Never `read_csv` from bronze outside
+  `build_silver.py`; never skip a layer.
+- Every derived column must be declared in `enrich.DERIVED_COLUMNS`.
+- Tracking is a deliberate exception: it stays JSONL in bronze, and silver holds only the
+  frame->byte-offset index, because Tier 3's lazy sweep seeks rather than scans.
+- **Gold is what is precomputed.** Cheap, reused, non-parameterised tracking fields go in
+  gold; advanced geometry is a lazy read through silver's index at query time.
+
+## Start here
+`docs/master_plan.md` is the single status entry point: pipeline state, what's built, issues
+hit and the fixes in place, current test-set results, and sequenced next steps.
+
 ## Reference files in this folder
 - `coach_question_test_set.md` — 80 seed questions across 8 categories (player-specific,
   spatial, event-type, sequence/chain, game-state/temporal, comparative/relational,
@@ -29,9 +48,32 @@ datasets. No film/video files are involved anywhere in this project.
   as direct field filters, confirming the structured-filtering bet; one query (Q3,
   sequence) needed widening to a real `start_type` value the synthetic generator never
   produced.
+- `scripts/enrich.py` / `docs/enrichment.md` — **Tier 1 + Tier 2 enrichment, built and
+  validated.** Adds 32 derived columns (goal timeline, parameterised shot/goal windows,
+  true possession chains, mirror-safe per-match-scaled zone flags, squad units, captain
+  hook). Took the test set from 47/22/11 to **57 exact, 16 approximate, 7 unresolved**.
+  Also records three corrections to `docs/real_data_validation.md` — most importantly that
+  `penalty_area_start/end` fires for *either* box, not attacking-only.
+- `scripts/field_catalog.py` / `docs/field_catalog.md` — generated event_type × column
+  availability map. 168 of 350 columns are populated on exactly one event_type and 28 are
+  missing from at least one match entirely; filtering the wrong one returns zero rows
+  silently. Consult before emitting a filter.
+- `docs/tier3_tracking_plan.md` — tracking prerequisites (verified: LFS pull works, 73% of
+  frames have full 22-player data, the event/tracking mirror-sign rule and its halftime
+  flip), the metric definitions for the 4 tracking-blocked questions, and a catalogue of
+  further tracking features (pitch control, set-piece geometry, dyadic relations, movement
+  quality, clip boundaries). Its §2 precompute architecture is superseded.
+- `docs/tier3_lazy_retrieval_plan.md` — **the adopted Tier 3 design.** Phase 1 event filters
+  produce a candidate set (median 156 events), then only those events' tracking frames are
+  fetched via a frame->byte-offset index (0.16s/match to build, 1.79ms per 50-frame window)
+  and each candidate is confirmed geometrically. Typical query ~280ms. Also fills in the
+  previously-undesigned Validation stage. Recommends a thin eager base for cheap per-frame
+  scalars (22us/frame) and team baselines, staying lazy for expensive geometry (convex hull
+  at 625us/frame) and anything dyadic or query-parameterised.
 - `scripts/test_all_questions.py` — the full follow-up: all 80 questions from
   `coach_question_test_set.md` run against all 20 real matches (94,517 events), each
-  tagged exact/approximate/unresolved. **47 exact, 22 approximate, 11 unresolved.** Full
+  tagged exact/approximate/unresolved. **47 exact, 22 approximate, 11 unresolved** at the
+  time of that pass — now 57/16/7 after Tier 1+2 enrichment, see `docs/enrichment.md`. Full
   results and analysis in `docs/real_data_validation.md`'s second half, including:
   Category 6 (comparative/relational) turned out to be mostly resolvable from per-event
   fields (`separation_start/end`, `interplayer_distance`) without raw tracking, contrary
@@ -88,6 +130,17 @@ design.
 Each gate should self-report whether it applies before extracting anything, since most
 real questions only touch 2-4 of the 8 categories.
 
+## Tier 3 decisions (settled)
+- **Lazy per-event confirmation, not bulk precompute.** Phase 1 event filters yield a
+  candidate set (median 156 events); only those events' frames are fetched (~0.6% of the
+  corpus) and confirmed geometrically.
+- **Precompute only cheap, targetable fields.** Spreads/centroids/nearest-opponent cost
+  22us/frame (39s for the corpus) and feed the per-team baselines that lazy evaluation
+  can't compute; convex hull costs 625us/frame (~18 min) and stays lazy, as does anything
+  dyadic or query-parameterised.
+- **Sample frames within the window.** Convex hull on 50 frames x 156 candidates = 4.9s; at
+  5 frames per window, 0.5s. Sample density is a per-predicate parameter.
+
 ## Open / not yet decided
 - Exact ordering/dependency of the 8 gates within the parsing chain.
 - Validation stage design.
@@ -96,11 +149,14 @@ real questions only touch 2-4 of the 8 categories.
   rows within one possession collapse into a single clip.
 - Whether/when to add a vector-embedding fallback path for the structured filters that
   can't cover a question (explicitly deferred, not rejected).
-- The 11 unresolved test-set questions' 4 underlying gaps: no captain flag anywhere in the
-  schema, no goal-timestamp field to anchor "N minutes after scoring/conceding" windows,
-  a few questions needing raw multi-player tracking geometry (Git-LFS-only upstream, not
-  yet pulled), and a handful of concepts with no schema tag at all (offside, "tracked
-  back", defender rotation on a beaten fullback).
+- **7** unresolved test-set questions remain (down from 11), in 3 groups: captain identity
+  (5, 78 — genuinely absent from SkillCorner, needs an external roster source);
+  multi-player tracking geometry (17, 56, 59 — Tier 3); and two untagged concepts
+  (27 offside, 66 "tracked back"). Goal timestamps and defender-beaten flags turned out to
+  be derivable after all — see `docs/enrichment.md`.
+- Tracking data is **no longer a blocker**: `git lfs pull` works anonymously and all 20
+  matches (1.82 GB) fetch fine via `scripts/fetch_match_data.sh all --tracking`. Tier 3 is
+  buildable, not just plannable.
 - The actual query-parsing chain (LLM prompt(s) that turn a coach's question into the
   8-gate structured query) — everything so far has hand-written the target query for a
   known test-set question; no code yet turns free text into one.
@@ -111,3 +167,10 @@ real questions only touch 2-4 of the 8 categories.
   test set.
 - Prefer verifying claims against the official SkillCorner CSV spec (in
   `skillcorner_schema.md`) over assuming a field exists.
+- Better still, verify against the real data over the spec. Of the concrete bugs the
+  enrichment pass found, three were documented fields behaving differently than documented
+  (`penalty_area_*` firing for both boxes; `goal_for` markers missing on some goals and
+  mis-attributed on defensive rows; `lead_to_shot` on a defensive row referring to the
+  opponent's shot) and one was a field present in only half the matches
+  (`playing_time.sequences`). A filter against a column that is null for that event type
+  returns zero rows silently — it looks like a finding, not a bug.

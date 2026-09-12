@@ -3,3 +3,5 @@ numpy>=1.24
 matplotlib>=3.7
 jupyter>=1.0
 nbclient>=0.10
+pyarrow>=14.0        # parquet for the silver/gold layers
+# orjson>=3.9        # optional: ~2-5x faster tracking-frame parsing (Tier 3)
