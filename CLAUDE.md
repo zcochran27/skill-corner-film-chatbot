@@ -131,6 +131,15 @@ Each gate should self-report whether it applies before extracting anything, sinc
 real questions only touch 2-4 of the 8 categories.
 
 ## Tier 3 decisions (settled)
+- **Prefer ranking to thresholding for fuzzy football concepts.** Where a concept has no
+  crisp definition ("near post"), return results ranked by the underlying measurement rather
+  than filtered by a chosen cutoff - Q68's answer moves between 12% and 48% across
+  defensible zone definitions, and ranking removes the cutoff entirely.
+- **Vector/similarity search stays deferred, now with a scope.** Strongest case is
+  query-by-example ("more like this clip"), then the untagged concepts; strictly worse for
+  the questions that already resolve deterministically. Two reasons not to reach for it
+  early: it hides judgement that a rectangle makes inspectable, and it is poor at absence,
+  which is what the negative/absence gate needs. See `docs/master_plan.md`.
 - **Lazy per-event confirmation, not bulk precompute.** Phase 1 event filters yield a
   candidate set (median 156 events); only those events' frames are fetched (~0.6% of the
   corpus) and confirmed geometrically.

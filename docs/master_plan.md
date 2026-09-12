@@ -16,6 +16,7 @@ Single entry point for where this project stands. Start here, then follow the li
 | `scripts/frame_index.py` | Tier 3 random access into tracking (`--benchmark`) |
 | `scripts/mirror_sign.py` | Measured tracking/event coordinate sign per (match, team, period) |
 | `scripts/predicates.py` | Phase-2 predicate harness (`--selftest`) |
+| `scripts/setpiece.py` | First real phase-2 predicates: Q68, Q70 (`--sensitivity`) |
 | `docs/test_results_enriched.md` | Current full 80-question run output |
 
 ---
@@ -30,7 +31,7 @@ Single entry point for where this project stands. Start here, then follow the li
 | 1. Preprocessing / enrichment | **Built** | `enrich.py` derivations applied by `build_gold.py`, 32 derived columns |
 | 2. Query parsing (8 gates) | **Not started** | No code turns free text into a structured query yet |
 | 3. Retrieval — phase 1 (events) | **Built** | Median 5ms, max 75ms across 73 timed questions |
-| 3. Retrieval — phase 2 (tracking) | **Foundation built** | `frame_index.py` + `mirror_sign.py` + `predicates.py`; chain self-tests at 100%. Real predicates next |
+| 3. Retrieval — phase 2 (tracking) | **Working** | First real predicates land Q68/Q70 as exact; ~1.5s vs a 6ms event-filter median |
 | 4. Validation | **Designed** | Folded into phase 2: the predicate *is* the validation |
 | 5. Output / ranking | **Not started** | Clip dedup now tractable via `team_possession_id` |
 
@@ -78,7 +79,10 @@ preserved behaviour.
 
 ## 3. Current results on the test set
 
-**57 exact · 16 approximate · 7 unresolved** (from 47 / 22 / 11).
+**59 exact · 14 approximate · 7 unresolved** (from 47 / 22 / 11).
+
+Two of those exacts (Q68, Q70) are resolved by phase-2 tracking rather than event filters —
+the first real proof that the lazy Tier 3 design works end to end.
 
 | Category | exact | approx | unresolved |
 |---|---|---|---|
@@ -88,7 +92,7 @@ preserved behaviour.
 | 4. Sequence | 9 | 2 | 0 |
 | 5. Game-state | 9 | 1 | 0 |
 | 6. Comparative | 5 | 3 | 2 |
-| 7. Negative/absence | 4 | 5 | 1 |
+| 7. Negative/absence | 6 | 3 | 1 |
 | 8. Composite | 4 | 1 | 1 |
 
 Every category has a majority resolved, and the two weakest (Negative/absence, Comparative)
@@ -243,9 +247,11 @@ is failure mode 4a again, with a different trigger and a much wider blast radius
    from tracking: 100.00% (344/344) on concordant, non-borderline candidates.
 
 ### Then — Tier 3 metrics, cheapest first
-4. **Thin eager base** — cheap per-frame scalars + per-team baselines (~40s build).
-5. **Set-piece geometry** → Q68, Q70 approximate → exact. Best first proof: small fixed
-   windows, cheap metrics.
+4. ~~**Set-piece geometry**~~ — **done.** Q68 and Q70 are exact (`scripts/setpiece.py`).
+   Q68 is returned **ranked by closest approach to the near post rather than thresholded**,
+   because a fixed zone moves the answer between 12% and 48% (`--sensitivity`) — ranking has
+   no arbitrary cutoff and stage 5 needs ranking anyway.
+5. **Thin eager base** — cheap per-frame scalars + per-team baselines (~40s build).
 6. **Recovery runs** → Q66 unresolved → resolved; gives the whole test set a
    defensive-work vocabulary it currently lacks.
 7. **Team shape** → Q17. **Dyadic** → Q59, then Q56 (hardest, most parameter-sensitive;
@@ -261,6 +267,38 @@ Projected ceiling once Tier 3 lands: **~64 exact, ~13 approximate, 3 unresolved*
 9. **Stage 5, ranking and clip dedup.** `team_possession_id` gives the grouping and Tier 3
    evidence frames give in/out points — most of a clip segmenter now exists. Ranking logic
    itself is still undecided.
+
+### Vector / similarity search — scoped, still deferred
+
+Revisited while building the set-piece predicates. Three different things get called
+similarity search here, and they do not share a verdict:
+
+- **Query-by-example is the strong case.** "More like this clip" needs no labels up front —
+  the clip *is* the label, and the coach defines a fuzzy concept by demonstration instead of
+  someone guessing a rectangle. Needs the clip UI to exist first.
+- **Untagged concepts are the second case** — offside (27), "tracked back" (66), and the
+  semantic-narrowing approximates (through ball, cutback, "game management"). SkillCorner
+  ships prior art: `Part6_BuildYourOwnMetric_Detecting_and_Evaluating_Cutback_Opportunities.ipynb`
+  in their tutorials repo is Q18's exact problem.
+- **It would be strictly worse for the 59 exact questions**, which already resolve
+  deterministically in milliseconds with guarantees.
+
+Two arguments against reaching for it sooner, both learned from Q68:
+
+1. **Hidden vs visible arbitrariness.** Replacing a hand-drawn zone with a learned boundary
+   does not remove the judgement, it conceals it. A rectangle can be sensitivity-swept and
+   printed; an embedding cannot, and this is a tool where a coach must be able to see why a
+   clip surfaced.
+2. **Similarity is poor at absence.** Q68 and Q70 are negative questions, and you cannot
+   reliably embed the absence of a thing. Even with a learned near-post concept the
+   anti-join stays deterministic — similarity would be a component, never a replacement.
+
+The cheaper move, taken for Q68: **rank instead of threshold.** The predicate already
+measures closest approach in metres, so ordering by it removes the arbitrary cutoff without
+any new machinery.
+
+Architecturally this stays additive: a learned or nearest-neighbour predicate satisfies the
+same `PredicateResult` contract as a geometric one, so the harness needs no rework to try it.
 
 ### Known dead ends — do not spend time here
 - **Q27 offside.** Tracking gives offside *positions*; referee *calls* are not in any

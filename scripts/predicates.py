@@ -42,7 +42,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from frame_index import FrameIndex, Window  # noqa: E402
+from frame_index import MIN_COVERAGE, FrameIndex, Window  # noqa: E402
 from mirror_sign import load_signs  # noqa: E402
 
 BOX_DEPTH, BOX_HALF_W = 16.5, 20.16
@@ -68,6 +68,17 @@ class EventContext:
     pitch_length: float = 105.0
     pitch_width: float = 68.0
     row: object = None          # the full event row, for predicates that need more
+    teams: dict = field(default_factory=dict)   # {player_id: team_id} for this match
+
+    def teammates(self, players: dict) -> dict:
+        """Of a {player_id: (x, y)} map, those on this event's own team."""
+        return {p: xy for p, xy in players.items()
+                if self.teams.get(p) == self.team_id}
+
+    def opponents(self, players: dict) -> dict:
+        t = self.teams
+        return {p: xy for p, xy in players.items()
+                if p in t and t[p] != self.team_id}
 
     @property
     def box_edge_x(self) -> float:
@@ -77,6 +88,10 @@ class EventContext:
     @property
     def six_edge_x(self) -> float:
         return self.pitch_length / 2.0 - SIX_DEPTH
+
+    def goal_x(self, own: bool = False) -> float:
+        """x of a goal line in the event frame (+x is the direction this team attacks)."""
+        return -self.pitch_length / 2.0 if own else self.pitch_length / 2.0
 
 
 @dataclass
@@ -103,6 +118,17 @@ class WindowPolicy:
     pre: int = 0
     post: int = 0
     samples: int | None = None       # None = every frame in the span
+    min_coverage: float | None = None
+    """Share of frames that must carry tracking before the predicate is even run.
+
+    None uses frame_index.MIN_COVERAGE (70%), which suits windows tight around live play.
+    Set-piece windows must lower it: a corner window spans the dead-ball setup, so a large
+    share of its frames legitimately carry no tracking, and the default gate rejects 79% of
+    corners before the predicate sees them. Lowering it does not weaken the
+    insufficient-data guarantee - the predicate still returns insufficient when it cannot
+    find what it needs (e.g. no locatable delivery), which is the check that actually
+    matters for negative/absence questions.
+    """
 
     def span(self, ctx: EventContext) -> tuple[int, int]:
         return ctx.frame_start - self.pre, ctx.frame_end + self.post
@@ -169,8 +195,8 @@ def clear_cache() -> None:
 
 
 def evaluate(candidates: pd.DataFrame, predicate: Callable, policy: WindowPolicy,
-             matches: pd.DataFrame | None = None, progress: bool = False,
-             **params) -> pd.DataFrame:
+             matches: pd.DataFrame | None = None, players: pd.DataFrame | None = None,
+             progress: bool = False, **params) -> pd.DataFrame:
     """Run `predicate` over every candidate event, returning the candidates plus results.
 
     Adds columns: matched, value, status, detail, evidence_lo, evidence_hi, n_frames.
@@ -181,6 +207,12 @@ def evaluate(candidates: pd.DataFrame, predicate: Callable, policy: WindowPolicy
     if matches is not None:
         pitch = {int(r.match_id): (r.pitch_length, r.pitch_width)
                  for r in matches.itertuples()}
+    # Tracking identifies players but not their team, so predicates that need to tell
+    # attackers from defenders depend on this lookup from the Silver players table.
+    team_of: dict = {}
+    if players is not None:
+        for r in players.itertuples():
+            team_of.setdefault(int(r.match_id), {})[int(r.player_id)] = int(r.team_id)
 
     out = []
     for n, r in enumerate(candidates.itertuples()):
@@ -197,11 +229,14 @@ def evaluate(candidates: pd.DataFrame, predicate: Callable, policy: WindowPolicy
                            frame_start=int(r.frame_start), frame_end=int(r.frame_end),
                            sign=sign,
                            player_id=int(r.player_id) if pd.notna(r.player_id) else None,
-                           pitch_length=pl, pitch_width=pw, row=r)
+                           pitch_length=pl, pitch_width=pw, row=r,
+                           teams=team_of.get(mid, {}))
         win = fetch_for(ctx, policy)
-        if not win.sufficient:
+        threshold = (policy.min_coverage if policy.min_coverage is not None
+                     else MIN_COVERAGE)
+        if win.coverage < threshold:
             res = PredicateResult.insufficient(
-                f"coverage {win.coverage:.0%} < threshold")
+                f"coverage {win.coverage:.0%} < {threshold:.0%}")
         else:
             try:
                 res = predicate(win, ctx, **params)

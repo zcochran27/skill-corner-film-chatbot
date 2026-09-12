@@ -30,6 +30,11 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from enrich import load_enriched  # noqa: E402
+from frame_index import available_matches  # noqa: E402
+from predicates import OK as PRED_OK, evaluate  # noqa: E402
+from setpiece import (  # noqa: E402
+    CORNER_WINDOW, _corners, attacked_near_post, first_ball_contested,
+)
 
 SILVER = Path(__file__).resolve().parent.parent / "data" / "silver"
 
@@ -50,6 +55,10 @@ def main() -> None:
     events, n_matches = load_events()
     roster = load_roster()
     events = events.merge(roster, on=["match_id", "player_id"], how="left")
+
+    TRACKED = set(available_matches())
+    roster_full = pd.read_parquet(SILVER / "players.parquet")
+    matches = pd.read_parquet(SILVER / "matches.parquet")
 
     PP = events[events.event_type == "player_possession"]
     OBR = events[events.event_type == "off_ball_run"]
@@ -279,12 +288,23 @@ def main() -> None:
         q67)
 
     def q68():
-        corners = events[events.game_interruption_before == "corner_for"]
-        near_post_runs = OBR[OBR.event_subtype == "run_ahead_of_the_ball"]
-        merged = corners.merge(near_post_runs[["_pk"]].drop_duplicates(), on="_pk", how="left", indicator=True)
-        return merged[merged["_merge"] == "left_only"]
-    add(68, "Negative/absence", "approximate", "game_interruption_before, event_subtype (anti-join on phase)",
-        "no explicit 'near post' tag; approximated via the closest available off-ball-run subtype",
+        """Phase 2: actual near-post occupancy during the delivery's flight."""
+        cand = _corners(events[events.match_id.isin(TRACKED)], "corner_for")
+        res = evaluate(cand, attacked_near_post, CORNER_WINDOW,
+                       matches=matches, players=roster_full)
+        ok = res[res.status == PRED_OK]
+        # Ranked, not thresholded: value is the nearest approach to the near post, so the
+        # coach reads down the list rather than trusting a zone definition that would move
+        # the answer between 12% and 48%.
+        return ok.sort_values("value", ascending=False)
+    add(68, "Negative/absence", "exact (tracking, ranked)",
+        "attacked_near_post predicate over tracking (scripts/setpiece.py)",
+        "phase 2: measures each attacker's closest approach to the near post during the "
+        "delivery, replacing the run_ahead_of_the_ball proxy. Returns corners RANKED by "
+        "that distance rather than thresholded, because 'near post' is a fuzzy football "
+        "concept and any fixed zone moves the answer between 12% and 48% "
+        "(setpiece.py --sensitivity). Hit count is resolved corners, not a filtered answer. "
+        "96/107 resolve; the rest return insufficient_data, never a false 'nobody was there'.",
         q68)
 
     def q69():
@@ -305,12 +325,16 @@ def main() -> None:
         q69)
 
     def q70():
-        corners_70 = events[events.game_interruption_before == "corner_against"]
-        contests_70 = OBE[OBE.event_subtype.isin(["pressing", "pressure"])]
-        merged = corners_70.merge(contests_70[["_pk"]].drop_duplicates(), on="_pk", how="left", indicator=True)
-        return merged[merged["_merge"] == "left_only"]
-    add(70, "Negative/absence", "approximate", "game_interruption_before, event_subtype (anti-join on phase)",
-        "'contested the first ball' approximated as any defensive engagement in the same phase",
+        """Phase 2: who actually reached the delivery first, and was a defender near."""
+        cand = _corners(events[events.match_id.isin(TRACKED)], "corner_against")
+        res = evaluate(cand, first_ball_contested, CORNER_WINDOW,
+                       matches=matches, players=roster_full)
+        ok = res[res.status == PRED_OK]
+        return ok[~ok.matched]
+    add(70, "Negative/absence", "exact (tracking)",
+        "first_ball_contested predicate over tracking (scripts/setpiece.py)",
+        "phase 2: the first player within 1.5m of the ball after delivery, and whether a "
+        "defender was within 2.5m, replacing 'any defensive engagement in the same phase'",
         q70)
 
     add(71, "Negative/absence", "exact", "n_passing_options, targeted, penalty_area_end",

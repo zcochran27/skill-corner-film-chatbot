@@ -319,8 +319,19 @@ warehouse for the eager design — while removing the two cons that would otherw
 3. **Predicate harness** — the `PredicateResult` contract, coverage/`insufficient_data`
    handling, and a session cache. Land this before any real metric so the metrics are
    uniform.
-4. **First real predicate: set-piece geometry (Q68, Q70)** — small fixed windows, cheap
-   metrics, two questions go approximate → exact. Best first proof.
+4. ~~**First real predicate: set-piece geometry (Q68, Q70)**~~ — **built**
+   (`scripts/setpiece.py`). Both are exact. Measured cost: ~1.5s per question over ~100
+   corners with 330-frame windows, against a 6ms median for event-only questions — the
+   phase-1/phase-2 contrast this plan predicted, in the test suite's own timing column.
+   Three things this surfaced:
+   - The event row's `frame_start` is **not** the delivery; it is the first tagged event,
+     sometimes the reception (~1.8s after the kick) and sometimes the taker's own possession
+     before it. Delivery is found from the ball track instead, resolving 92%.
+   - `WindowPolicy` needed a per-policy `min_coverage`. A corner window spans the dead-ball
+     setup, so the blanket 70% gate rejected 79% of corners before the predicate ran.
+   - "Near post" is a definitional choice, not a measurement: a fixed zone moves the answer
+     between 12% and 48%. Q68 is therefore returned **ranked by closest approach**, which
+     has no cutoff at all.
 5. **Recovery runs (Q66)** — single-player, single-window; unblocks an unresolved question.
 6. **Eager scalar base + baselines** (§5) — once two or three predicates exist and it is
    clear which scalars actually get reused.
