@@ -183,6 +183,8 @@ class AnthropicGateClient:
         self._client = anthropic.Anthropic()
         self.model = model
         self.effort = effort or env_effort()
+        #: One record per API call, for cost accounting. Tokens only - never content.
+        self.usage_log: list[dict] = []
 
     def run_gate(self, gate: str, question: str) -> dict:
         system = [{
@@ -200,7 +202,19 @@ class AnthropicGateClient:
         )
         if self.effort:
             kwargs["output_config"]["effort"] = self.effort
+        import time
+        t0 = time.perf_counter()
         resp = self._client.messages.create(**kwargs)
+        u = resp.usage
+        self.usage_log.append(dict(
+            gate=gate,
+            input_tokens=u.input_tokens,
+            output_tokens=u.output_tokens,
+            cache_creation_input_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
+            cache_read_input_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
+            seconds=time.perf_counter() - t0,
+            stop_reason=resp.stop_reason,
+        ))
         if resp.stop_reason == "refusal":                # guard before reading content
             raise RuntimeError(f"model refused: {getattr(resp, 'stop_details', None)}")
         text = next((b.text for b in resp.content if b.type == "text"), "")
