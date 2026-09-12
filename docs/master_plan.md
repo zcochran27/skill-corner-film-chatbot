@@ -19,7 +19,8 @@ Single entry point for where this project stands. Start here, then follow the li
 | `scripts/predicates.py` | Phase-2 predicate harness (`--selftest`) |
 | `scripts/setpiece.py` | Phase-2 set-piece predicates: Q68, Q70 (`--sensitivity`) |
 | `scripts/defensive.py` | Phase-2 recovery runs: Q66 (`--distribution`) |
-| `scripts/dyadic.py` | Phase-2 two-player predicates: Q59 (`--distribution`) |
+| `scripts/dyadic.py` | Phase-2 two-player predicates: Q56, Q59 (`--distribution`) |
+| `scripts/tracking_base.py` | Eager per-player positional baselines (Gold) |
 | `docs/test_results_enriched.md` | Current full 80-question run output |
 
 ---
@@ -82,7 +83,11 @@ preserved behaviour.
 
 ## 3. Current results on the test set
 
-**62 exact · 14 approximate · 4 unresolved** (from 47 / 22 / 11).
+**63 exact · 14 approximate · 3 unresolved** (from 47 / 22 / 11).
+
+**Every question the data can support is now built.** The three that remain are permanently
+unanswerable — captain identity and offside calls — and all three carry registered refusal
+text (`docs/answerability.md`), so the app never has to guess.
 
 Three of those exacts (Q66, Q68, Q70) are resolved by phase-2 tracking rather than event
 filters. **Negative/absence — the weakest category in the first pass at 4 exact / 5
@@ -97,7 +102,7 @@ what happened rather than what did not.
 | 3. Event-type | 9 | 1 | 1 |
 | 4. Sequence | 9 | 2 | 0 |
 | 5. Game-state | 9 | 1 | 0 |
-| 6. Comparative | **6** | 3 | **1** |
+| 6. Comparative | **7** | 3 | **0** |
 | 7. Negative/absence | **7** | 3 | **0** |
 | 8. Composite | 4 | 1 | 1 |
 
@@ -113,7 +118,7 @@ event rows only partly express.
 | — | *(all five now have registered refusal text — see `docs/answerability.md`)* | |
 | ~~17~~ | ~~block shape~~ | **resolved from phases, no tracking needed** - see 4h |
 | ~~59~~ | ~~foot race~~ | **resolved** - `scripts/dyadic.py` |
-| 56 | dragged out of position | Tier 3 tracking (needs a positional baseline) |
+| ~~56~~ | ~~dragged out of position~~ | **resolved** - `scripts/dyadic.py` + player baselines |
 | ~~66~~ | ~~"tracked back"~~ | **resolved** - `scripts/defensive.py` |
 | 27 | offside calls | **Nothing.** Tracking gives offside *positions*, never referee *calls* |
 
@@ -212,6 +217,28 @@ Q17 now resolves in **3.9ms** as a phase-level query against a per-team baseline
 was about a whole data source rather than a single field, so nothing re-examined it.** Before
 building expensive machinery, re-check what the cheap sources actually contain.
 
+### 4i. Measuring something real, but not the thing asked
+
+Q56 ("centre back dragged out of position by a striker's movement") first measured each
+defender's displacement from his own positional baseline and ranked by it. The numbers were
+correct and the top results were wrong: they were teams pressing high, where the **whole back
+line** had stepped up 25m together. Inspecting the raw coordinates of one case made it
+plain - all three of that team's centre backs sat 22-26m from baseline simultaneously.
+
+A collective line push is a pressing scheme, not a striker dragging someone. The fix is to
+measure **relative to his own line** - his displacement minus the median displacement of his
+back-line colleagues - so a whole line stepping up nets to zero and only a defender leaving
+while the others hold registers.
+
+A second version of the same error followed: ranking by the LEVEL of line-relative
+displacement surfaced defenders who were already out of line before the run began. Measuring
+the GROWTH during the window fixed it.
+
+Distinct from the bugs in 4e: nothing here was arithmetically wrong. The quantity was
+computed correctly and simply was not the question. **The check that caught it was reading
+the raw coordinates of a single top-ranked result and asking whether the football made
+sense** - not a distribution, not a unit test.
+
 ### 4e. Tracking measurement traps
 
 Three bugs found while building phase-2 predicates, all the same family: an arithmetic
@@ -299,14 +326,15 @@ is failure mode 4a again, with a different trigger and a much wider blast radius
    rather than thresholded. Gives the test set a defensive-work vocabulary the event schema
    lacks entirely.
 6. **Thin eager base** — cheap per-frame scalars + per-team baselines (~40s build).
-7. ~~**Team shape** → Q17~~ — done, never needed tracking (see 4h). ~~**Q59 foot
-   race**~~ — done (`scripts/dyadic.py`). Remaining: **Q56**, which needs a per-player
-   positional baseline — a corpus statistic, so it belongs in the eager base rather than
-   being refetched per candidate.
+7. ~~**Team shape** → Q17~~, ~~**Q59 foot race**~~, ~~**Q56 dragged out of
+   position**~~ — **all done.** Tier 3 is complete; the eager base
+   (`scripts/tracking_base.py`) holds per-player positional baselines, and nothing else was
+   built eagerly because nothing else needed it.
 
-Projected ceiling once the remaining Tier 3 work lands: **63 exact, 14 approximate,
-3 unresolved** (captain x2 plus offside - all three permanently unanswerable, see
-`docs/answerability.md`). Only Q56 is still buildable.
+**Ceiling reached.** The projection was 63 / 14 / 3 and that is the result. Nothing
+further is buildable without new data: captain needs an external roster source
+(`data/captains.json` is the hook), and offside calls need a referee feed that does not
+exist.
 
 ### In parallel — the actual product gap
 8. **Stage 2, the query-parsing chain.** Still zero code. Needs: the gate ordering and

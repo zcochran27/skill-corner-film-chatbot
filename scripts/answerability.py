@@ -18,12 +18,13 @@ Three verdicts, three behaviours:
   NO_DATA          The concept is absent from every available source and always will be.
                    Refuse, explain, and offer the nearest thing that IS answerable.
   NOT_IMPLEMENTED  The data exists but the retrieval for it has not been built.
-                   Say so plainly - it is a different promise from NO_DATA.
+                   Say so plainly - it is a different promise from NO_DATA. Currently
+                   empty: everything the data supports has been built.
   APPROXIMATE      Answerable only through a documented proxy. Answer, but DISCLOSE the
                    proxy in the response; never present it as exact.
 
-Anything not listed here is answerable exactly, which is the default for 61 of the 80
-test-set questions.
+Anything not listed here is answerable exactly, which is the default for 63 of the 80
+test-set questions. Every question that is NOT answerable now has registered refusal text.
 
 Usage:
     from answerability import check, Verdict
@@ -86,20 +87,10 @@ NO_DATA_GAPS = {
 
 #: Concepts the data supports but the retrieval for has not been built yet. These are
 #: promises the app can keep later, so say so rather than implying a permanent gap.
-NOT_IMPLEMENTED_GAPS = {
-    "dragged_out_of_position": Verdict(
-        concept="dragged_out_of_position",
-        kind=NOT_IMPLEMENTED,
-        why="Needs a per-player positional baseline plus a lead/lag test showing the "
-            "forward moved first. Tracking supports it; the predicate is not built.",
-        say="I can't answer that yet. The tracking data supports it, but I haven't built "
-            "the measurement for whether a defender was pulled out of position — and "
-            "specifically whether the attacker's movement caused it.",
-        nearest="I can show you a centre back's engagements against a given striker, which "
-                "covers some of the same moments.",
-        questions=(56,),
-    ),
-}
+NOT_IMPLEMENTED_GAPS: dict = {}
+"""Currently empty: every question the data can support has been built. Entries belong here
+when retrieval lags the data, and must say "yet" - that is a different promise from NO_DATA."""
+
 
 #: Concepts answerable only through a documented proxy. Answering is fine; answering
 #: WITHOUT saying so is not. The `say` text is a disclosure to attach to the results, not

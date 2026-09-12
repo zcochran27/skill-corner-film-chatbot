@@ -38,7 +38,10 @@ from setpiece import (  # noqa: E402
 from defensive import (  # noqa: E402
     RECOVERY_WINDOW, _candidates as _turnovers, recovery_run,
 )
-from dyadic import RACE_WINDOW, foot_race, runs_in_behind  # noqa: E402
+from dyadic import (  # noqa: E402
+    RACE_WINDOW, dragged_out_of_position, foot_race, pulling_runs, runs_in_behind,
+)
+from tracking_base import load_baselines  # noqa: E402
 
 SILVER = Path(__file__).resolve().parent.parent / "data" / "silver"
 GOLD = Path(__file__).resolve().parent.parent / "data" / "gold"
@@ -264,8 +267,25 @@ def main() -> None:
     add(55, "Comparative", "approximate", "player_position, interplayer_distance, n_teammates_ahead_start",
         "'isolated' approximated as the fullback in possession with a tracked nearest-opponent distance and no teammates ahead of the ball to combine with; interplayer_distance is only populated on player_possession/passing_option rows, not on_ball_engagement",
         lambda: PP[(PP.player_position.isin(FB)) & (PP.interplayer_distance.notna()) & (PP.n_teammates_ahead_start == 0)])
-    add(56, "Comparative", "unresolved", "-",
-        "'dragged out of position' needs a before/after positional baseline for the CB across the possession, which needs raw tracking frames, not single event rows", None)
+    def q56():
+        """Phase 2: did a defender leave his line, toward the striker, after the striker moved."""
+        cand = pulling_runs(events, TRACKED)
+        res = evaluate(cand, dragged_out_of_position, RACE_WINDOW,
+                       matches=matches, players=roster_full, baselines=load_baselines())
+        ok = res[res.status == PRED_OK]
+        return ok[ok.matched].sort_values("value", ascending=False)
+    add(56, "Comparative", "exact (tracking, ranked)",
+        "dragged_out_of_position predicate + gold/player_baselines.parquet (scripts/dyadic.py)",
+        "phase 2, dyadic: measures how much further out of line a centre back was pulled "
+        "RELATIVE to the rest of his own back line, not his absolute displacement. Measuring "
+        "the absolute version first put teams pressing high at the top, where the whole line "
+        "had stepped up 25m together - a pressing scheme, not a striker dragging anyone. "
+        "Also requires the growth in displacement DURING the window (a defender already out "
+        "of line was not dragged by this run), that he closed on the forward, and that the "
+        "forward moved first by cross-correlation lag. Baselines are a corpus statistic and "
+        "so live in Gold; they cannot come from the candidate's own window, because the "
+        "excursion being measured is inside it.",
+        q56)
     add(57, "Comparative", "approximate", "player_position, last_line_break",
         "'double pivot split by a vertical pass' approximated as any line-break pass played by a DM/LDM/RDM (player_in_possession_position is null on player_possession rows since player_position already identifies the passer there; not verified geometrically as 'through the pivot')",
         lambda: PP[(PP.player_position.isin(PIVOT)) & (PP.last_line_break == True)])
