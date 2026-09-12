@@ -80,18 +80,22 @@ frame number out of each line's first 24 bytes, never the whole JSON:
 
 Measured against **real event windows** (`scripts/frame_index.py --benchmark`):
 
-| Operation | Cost |
-|---|---|
-| One ~45-frame window, full density | **~6 ms** |
-| Typical query, 156 windows, full density | **~960 ms** |
-| Typical query, 156 windows, 5 samples each | **~140 ms** |
-| p90 query, 1,943 windows, sampled | ~1.7 s |
+| Operation | Cold page cache | Warm page cache |
+|---|---|---|
+| One ~45-frame window, full density | ~6 ms | **~1.8 ms** |
+| Typical query, 156 windows, full density | ~960 ms | **~280 ms** |
+| Typical query, 156 windows, 5 samples each | ~140 ms | **~50 ms** |
+
+The 3x spread is the OS page cache: a 91 MB tracking file read repeatedly stays resident,
+so the warm column is what a running service sees and the cold column is first touch after
+a restart. Both are real; quote the cold one when sizing worst case.
 
 > **Correction to an earlier estimate.** This plan originally quoted 1.79 ms/window and
-> 280 ms per query. That benchmark drew *random* frames, 27% of which are near-empty
-> ball-out-of-play lines that parse almost instantly. Real event windows are always full
-> 22-player frames, and cost ~3x more. The design conclusion is unchanged; the number was
-> optimistic.
+> 280 ms per query from a single benchmark. Two things were wrong with it: it drew *random*
+> frames, 27% of which are near-empty ball-out-of-play lines that parse almost instantly,
+> and it was run warm. Real event windows are always full 22-player frames. The original
+> figure happens to match the warm-cache column above by coincidence, not because it
+> measured the same thing. The design conclusion is unchanged.
 
 **The cost is parsing, not I/O — and that changes which optimisation matters.** For a
 156-window job, seek + readline alone is **33 ms**; parsing the same frames is **837 ms**,
