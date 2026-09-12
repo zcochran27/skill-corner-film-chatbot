@@ -38,6 +38,7 @@ from setpiece import (  # noqa: E402
 from defensive import (  # noqa: E402
     RECOVERY_WINDOW, _candidates as _turnovers, recovery_run,
 )
+from dyadic import RACE_WINDOW, foot_race, runs_in_behind  # noqa: E402
 
 SILVER = Path(__file__).resolve().parent.parent / "data" / "silver"
 GOLD = Path(__file__).resolve().parent.parent / "data" / "gold"
@@ -270,8 +271,23 @@ def main() -> None:
         lambda: PP[(PP.player_position.isin(PIVOT)) & (PP.last_line_break == True)])
     add(58, "Comparative", "exact", "n_opponents_ahead_end",
         "", lambda: PP[PP.n_opponents_ahead_end == 0])
-    add(59, "Comparative", "unresolved", "-",
-        "'foot race' needs relative speed/position over a shared window between two specific players from raw tracking, not single-player event rows", None)
+    def q59():
+        """Phase 2: two-player speed and heading over a shared window."""
+        cand = runs_in_behind(events, TRACKED)
+        res = evaluate(cand, foot_race, RACE_WINDOW,
+                       matches=matches, players=roster_full)
+        ok = res[res.status == PRED_OK]
+        return ok.sort_values("value", ascending=False)
+    add(59, "Comparative", "exact (tracking, ranked)",
+        "foot_race predicate over tracking (scripts/dyadic.py)",
+        "phase 2, dyadic: anchors on off-ball runs tagged 'behind' by a forward (which gives "
+        "the striker's identity for free), finds the opposing centre back in the frames, and "
+        "compares peak speed and heading over the frames both are tracked in. Ranked by the "
+        "LOWER of the two peak speeds - taking the minimum is what makes it a race, since a "
+        "striker sprinting away from a jogging defender is a different event. The pair is "
+        "resolved lazily: all opponent pairs would be 11x11 across 44k frames x 20 matches, "
+        "almost none of which any question asks about. Separation start->end says who won.",
+        q59)
     add(60, "Comparative", "exact", "player_position, separation_start",
         "", lambda: events[(events.player_position.isin(FB)) & (events.separation_start < 2)])
     add(61, "Comparative", "exact", "player_in_possession_position, n_teammates_ahead_start, n_player_targeted_opponents_ahead_start",

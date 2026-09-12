@@ -19,6 +19,7 @@ Single entry point for where this project stands. Start here, then follow the li
 | `scripts/predicates.py` | Phase-2 predicate harness (`--selftest`) |
 | `scripts/setpiece.py` | Phase-2 set-piece predicates: Q68, Q70 (`--sensitivity`) |
 | `scripts/defensive.py` | Phase-2 recovery runs: Q66 (`--distribution`) |
+| `scripts/dyadic.py` | Phase-2 two-player predicates: Q59 (`--distribution`) |
 | `docs/test_results_enriched.md` | Current full 80-question run output |
 
 ---
@@ -81,7 +82,7 @@ preserved behaviour.
 
 ## 3. Current results on the test set
 
-**61 exact · 14 approximate · 5 unresolved** (from 47 / 22 / 11).
+**62 exact · 14 approximate · 4 unresolved** (from 47 / 22 / 11).
 
 Three of those exacts (Q66, Q68, Q70) are resolved by phase-2 tracking rather than event
 filters. **Negative/absence — the weakest category in the first pass at 4 exact / 5
@@ -96,7 +97,7 @@ what happened rather than what did not.
 | 3. Event-type | 9 | 1 | 1 |
 | 4. Sequence | 9 | 2 | 0 |
 | 5. Game-state | 9 | 1 | 0 |
-| 6. Comparative | 5 | 3 | 2 |
+| 6. Comparative | **6** | 3 | **1** |
 | 7. Negative/absence | **7** | 3 | **0** |
 | 8. Composite | 4 | 1 | 1 |
 
@@ -111,7 +112,8 @@ event rows only partly express.
 | 5, 78 | captain | External roster data — not in SkillCorner at all |
 | — | *(all five now have registered refusal text — see `docs/answerability.md`)* | |
 | ~~17~~ | ~~block shape~~ | **resolved from phases, no tracking needed** - see 4h |
-| 56, 59 | dragged out of position, foot race | Tier 3 tracking (dyadic) |
+| ~~59~~ | ~~foot race~~ | **resolved** - `scripts/dyadic.py` |
+| 56 | dragged out of position | Tier 3 tracking (needs a positional baseline) |
 | ~~66~~ | ~~"tracked back"~~ | **resolved** - `scripts/defensive.py` |
 | 27 | offside calls | **Nothing.** Tracking gives offside *positions*, never referee *calls* |
 
@@ -297,13 +299,14 @@ is failure mode 4a again, with a different trigger and a much wider blast radius
    rather than thresholded. Gives the test set a defensive-work vocabulary the event schema
    lacks entirely.
 6. **Thin eager base** — cheap per-frame scalars + per-team baselines (~40s build).
-7. ~~**Team shape** → Q17~~ — **done, and it never needed tracking** (see 4h). Remaining:
-   **dyadic** → Q59, then Q56 — the hardest and most parameter-sensitive; prototype on one
-   match and eyeball the output before trusting it.
+7. ~~**Team shape** → Q17~~ — done, never needed tracking (see 4h). ~~**Q59 foot
+   race**~~ — done (`scripts/dyadic.py`). Remaining: **Q56**, which needs a per-player
+   positional baseline — a corpus statistic, so it belongs in the eager base rather than
+   being refetched per candidate.
 
-Projected ceiling once the remaining Tier 3 work lands: **~63 exact, ~14 approximate,
-3 unresolved** (captain x2 plus offside). Only Q56 and Q59 are still blocked, both on dyadic
-player-pair geometry.
+Projected ceiling once the remaining Tier 3 work lands: **63 exact, 14 approximate,
+3 unresolved** (captain x2 plus offside - all three permanently unanswerable, see
+`docs/answerability.md`). Only Q56 is still buildable.
 
 ### In parallel — the actual product gap
 8. **Stage 2, the query-parsing chain.** Still zero code. Needs: the gate ordering and

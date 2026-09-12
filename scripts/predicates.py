@@ -183,6 +183,48 @@ def signed_ball(frame: dict, sign: int) -> tuple[float, float] | None:
     return b["x"] * sign, b["y"] * sign
 
 
+SMOOTH_FRAMES = 5
+#: Speed bands from the schema's own cheat sheet, km/h.
+BAND_RUNNING, BAND_HSR, BAND_SPRINT = 15.0, 20.0, 25.0
+
+
+def smooth(a, n: int = SMOOTH_FRAMES):
+    """Centred rolling mean with correct edge handling.
+
+    Do NOT use np.convolve(..., mode="same") here: it zero-pads, dragging the first and last
+    n/2 samples toward the origin, so a player at x=30 appears to move 30m in 0.1s. That
+    produced a median 'peak speed' of 245 km/h before it was caught (master_plan 4e).
+    Positions are extrapolated on ~13% of player-frames and the upstream README flags speed
+    as needing smoothing, so always smooth before differentiating.
+    """
+    a = np.asarray(a, dtype=float)
+    if len(a) < 2:
+        return a
+    return pd.Series(a).rolling(n, center=True, min_periods=1).mean().to_numpy()
+
+
+def player_series(win: "Window", ctx: "EventContext", player_id: int):
+    """(frames, x, y) for one player across the window, in the event frame."""
+    fs, xs, ys = [], [], []
+    for frame in win.usable:
+        pos = signed_players(frame, ctx.sign).get(player_id)
+        if pos is None:
+            continue
+        fs.append(frame["frame"])
+        xs.append(pos[0])
+        ys.append(pos[1])
+    return np.asarray(fs), np.asarray(xs), np.asarray(ys)
+
+
+def velocity(frames, xs, ys):
+    """(speed_kmh, vx, vy) from a smoothed position series. Length is len(frames) - 1."""
+    sx, sy = smooth(xs), smooth(ys)
+    dt = np.diff(frames) / 10.0
+    dt = np.where(dt == 0, np.nan, dt)
+    vx, vy = np.diff(sx) / dt, np.diff(sy) / dt
+    return np.hypot(vx, vy) * 3.6, vx, vy
+
+
 def in_penalty_area(x: float, y: float, edge_x: float, own: bool) -> bool:
     return (x < -edge_x if own else x > edge_x) and abs(y) <= BOX_HALF_W
 

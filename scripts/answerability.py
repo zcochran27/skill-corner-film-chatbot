@@ -99,17 +99,6 @@ NOT_IMPLEMENTED_GAPS = {
                 "covers some of the same moments.",
         questions=(56,),
     ),
-    "foot_race": Verdict(
-        concept="foot_race",
-        kind=NOT_IMPLEMENTED,
-        why="Needs synchronised two-player velocity over a shared window. Tracking "
-            "supports it; the predicate is not built.",
-        say="I can't answer that yet. It needs a side-by-side speed comparison between two "
-            "specific players over the same few seconds, which I haven't built.",
-        nearest="I can show balls played in behind the defensive line, which is where most "
-                "foot races start.",
-        questions=(59,),
-    ),
 }
 
 #: Concepts answerable only through a documented proxy. Answering is fine; answering

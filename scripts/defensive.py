@@ -37,46 +37,17 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from frame_index import Window  # noqa: E402
 from predicates import (  # noqa: E402
-    OK, EventContext, PredicateResult, WindowPolicy, evaluate, signed_players,
+    BAND_HSR, BAND_RUNNING, BAND_SPRINT, OK, SMOOTH_FRAMES, EventContext,
+    PredicateResult, WindowPolicy, evaluate, player_series, signed_players, smooth,
 )
 
 WINGERS = ("LW", "RW", "LM", "RM")
 #: Seconds of play after the turnover in which a recovery run should happen.
 RECOVERY_FRAMES = 100
-#: Smoothing span before differentiating - the upstream README flags speed as needing it,
-#: and positions are extrapolated on ~13% of player-frames.
-SMOOTH_FRAMES = 5
 #: Net retreat (metres toward own goal) that counts as having tracked back at all.
 TRACKED_BACK_M = 5.0
-#: Speed bands from the schema's own cheat sheet, km/h.
-BAND_RUNNING, BAND_HSR, BAND_SPRINT = 15.0, 20.0, 25.0
 
 RECOVERY_WINDOW = WindowPolicy(pre=0, post=RECOVERY_FRAMES, min_coverage=0.50)
-
-
-def _series(win: Window, ctx: EventContext, player_id: int):
-    """(frames, x, y) for one player across the window, in the event frame."""
-    fs, xs, ys = [], [], []
-    for frame in win.usable:
-        pos = signed_players(frame, ctx.sign).get(player_id)
-        if pos is None:
-            continue
-        fs.append(frame["frame"])
-        xs.append(pos[0])
-        ys.append(pos[1])
-    return np.asarray(fs), np.asarray(xs), np.asarray(ys)
-
-
-def _smooth(a: np.ndarray, n: int = SMOOTH_FRAMES) -> np.ndarray:
-    """Centred rolling mean with correct edge handling.
-
-    np.convolve(..., mode="same") zero-pads, which drags the first and last n/2 samples
-    toward the origin - a player at x=30 appears to jump 30m in 0.1s, i.e. ~1000 km/h.
-    That produced a median 'peak speed' of 245 km/h before this was fixed.
-    """
-    if len(a) < 2:
-        return a
-    return (pd.Series(a).rolling(n, center=True, min_periods=1).mean().to_numpy())
 
 
 def recovery_run(win: Window, ctx: EventContext,
@@ -102,10 +73,10 @@ def recovery_run(win: Window, ctx: EventContext,
 
     best = None
     for pid in wingers:
-        fs, xs, ys = _series(win, ctx, pid)
+        fs, xs, ys = player_series(win, ctx, pid)
         if len(fs) < SMOOTH_FRAMES * 2:
             continue
-        sx, sy = _smooth(xs), _smooth(ys)
+        sx, sy = smooth(xs), smooth(ys)
         dt = np.diff(fs) / 10.0                     # frames -> seconds
         dt[dt == 0] = np.nan
         vx = np.diff(sx) / dt
