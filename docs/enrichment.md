@@ -6,6 +6,10 @@ event_type × column availability guardrail).
 
 ## Result
 
+> **Current state:** these are the Tier 1 + Tier 2 numbers. After Tier 3 the test set
+> stands at **63 exact / 14 approximate / 3 unresolved**, which is the ceiling: the three
+> left are permanently unanswerable. See `docs/master_plan.md`.
+
 Re-running all 80 test-set questions through `scripts/test_all_questions.py`, which now
 loads via `enrich.load_enriched()`:
 

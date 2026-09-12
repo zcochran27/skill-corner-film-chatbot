@@ -313,12 +313,13 @@ warehouse for the eager design — while removing the two cons that would otherw
    provides `FrameIndex.load()`, `fetch_window()`, `fetch_sampled()`, `fetch_at()`, staleness
    validation against the Bronze fingerprint, and `Window.coverage/.sufficient`.
    `--benchmark` reproduces the numbers above.
-2. **Mirror-sign resolver** — measure `sign(match, team, period)` by regressing event x/y
-   against tracking x/y (the method already used to verify it), cache per match. Assert on a
-   held-out sample rather than trusting it.
-3. **Predicate harness** — the `PredicateResult` contract, coverage/`insufficient_data`
-   handling, and a session cache. Land this before any real metric so the metrics are
-   uniform.
+2. ~~**Mirror-sign resolver**~~ — **built** (`scripts/mirror_sign.py`, run inside
+   `build_silver.py`). All 80 (match, team, period) groups resolve at 100% confidence, and
+   both structural invariants hold: the two teams in a period have opposite signs, and every
+   team's sign flips at halftime.
+3. ~~**Predicate harness**~~ — **built** (`scripts/predicates.py`). `--selftest` validates the
+   whole chain by reproducing a Gold column from tracking: 100.00% (344/344) on candidates
+   where both sources agree and the point is off the box boundary.
 4. ~~**First real predicate: set-piece geometry (Q68, Q70)**~~ — **built**
    (`scripts/setpiece.py`). Both are exact. Measured cost: ~1.5s per question over ~100
    corners with 330-frame windows, against a 6ms median for event-only questions — the
@@ -337,10 +338,15 @@ warehouse for the eager design — while removing the two cons that would otherw
    no row for him. The workaround is to anchor on his team's turnover - which IS an event -
    and locate the winger by position within the frames. That pattern should generalise to
    most "player failed to do X" questions.
-6. **Eager scalar base + baselines** (§5) — once two or three predicates exist and it is
-   clear which scalars actually get reused.
-7. ~~**Team shape (Q17)**~~ - resolved from `_phases_of_play.csv` without tracking. Then **dyadic (Q59, then Q56)** - hardest and most
-   parameter-sensitive; prototype on one match and eyeball the output before trusting it.
+6. ~~**Eager scalar base + baselines**~~ — **built, narrower than planned**
+   (`scripts/tracking_base.py`). Only per-player positional baselines were needed (for Q56).
+   The per-frame team-shape scalars were deliberately *not* built: their justification was
+   Q17, which turned out to need no tracking at all.
+7. ~~**Team shape (Q17)**~~ — resolved from `_phases_of_play.csv` without tracking.
+   ~~**Dyadic (Q59, then Q56)**~~ — **built** (`scripts/dyadic.py`).
+
+**Tier 3 is complete.** The test set reached its projected ceiling of 63 exact / 14
+approximate / 3 unresolved; the remaining three are permanently unanswerable.
 
 Per the project's stated habit, check each stage against the test set before starting the
 next, and prefer measuring the data over trusting the spec.

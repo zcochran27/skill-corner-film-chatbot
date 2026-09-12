@@ -35,10 +35,10 @@ chatbot says.
 
 | Mode | When | Behaviour |
 |---|---|---|
-| **Exact** | A deterministic filter answers the question as asked | Answer plainly. 61 of 80 test-set questions. |
+| **Exact** | A deterministic filter answers the question as asked | Answer plainly. 63 of 80 test-set questions. |
 | **Approximate** | Answerable only through a documented proxy | Answer, **and disclose the proxy in the response**. 14 questions. |
 | **Ranked** | The concept is a continuum with no natural cutoff | Return an ordering, and do not imply a filtered set. Q17, Q66, Q68. |
-| **Unanswerable** | No data, or not built | **Refuse. Explain why. Offer the nearest answerable thing.** 5 questions. |
+| **Unanswerable** | No data, or not built | **Refuse. Explain why. Offer the nearest answerable thing.** 3 questions, all `no_data`. |
 
 Plus a per-result caveat that cuts across all four:
 
@@ -78,10 +78,16 @@ file is ever populated, captain moves out of this table. Offside never does.
 The data supports it; the retrieval has not been built. Saying "I can't" without the
 "yet" makes a permanent-sounding promise the app will break later.
 
-| Concept | Questions | Why |
+**Currently empty.** Both former entries have since been built, so every question the data
+can support is now answerable:
+
+| Concept | Questions | Resolved by |
 |---|---|---|
-| **dragged out of position** | 56 | Needs a per-player positional baseline plus a lead/lag test that the attacker moved first. |
-| **foot race** | 59 | Needs synchronised two-player velocity over a shared window. |
+| ~~dragged out of position~~ | 56 | `scripts/dyadic.py` + per-player baselines in Gold |
+| ~~foot race~~ | 59 | `scripts/dyadic.py` |
+
+The category stays in the registry because it will be needed again - any time the data
+supports something the retrieval does not yet do. Entries must say "yet".
 
 ---
 

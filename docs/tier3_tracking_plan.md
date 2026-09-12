@@ -1,5 +1,11 @@
 # Tier 3 Plan — Tracking-Derived Enrichment
 
+> **Status: complete.** Written when 7 questions were unresolved; the test set now stands at
+> 63 exact / 14 approximate / 3 unresolved. The adopted design is lazy per-event
+> confirmation (`docs/tier3_lazy_retrieval_plan.md`), which supersedes §2 below. §3's metric
+> definitions are what got built, with two corrections recorded in `docs/master_plan.md`:
+> Q17 needed no tracking (§4h), and Q56 had to be measured relative to the back line (§4i).
+
 Tier 1 and Tier 2 (`docs/enrichment.md`) took the test set from 47/22/11 to 57/16/7. The
 remaining 7 unresolved questions split into three groups, only one of which Tier 3 can fix:
 

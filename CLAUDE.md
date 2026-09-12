@@ -17,8 +17,9 @@ proxy and presents it as the real thing.** See `docs/answerability.md`; the regi
 verbatim user-facing text live in `scripts/answerability.py`.
 - `no_data` (captain, offside calls) - refuse permanently, explain why, offer the nearest
   answerable alternative.
-- `not_implemented` (dragged out of position, foot race) - refuse *for now*; the data
-  supports it, so do not make a permanent-sounding promise.
+- `not_implemented` - refuse *for now*; the data supports it, so do not make a
+  permanent-sounding promise. **Currently empty** - both former entries (dragged out of
+  position, foot race) have since been built.
 - `approximate` (14 questions) - answer, but **disclose the proxy alongside the results**.
 - `ranked` (Q17, Q66, Q68) - return an ordering; never phrase it as a filtered set, since
   that smuggles in a threshold that was never measured.
@@ -44,6 +45,12 @@ for the full contract. The rules are not optional:
 ## Start here
 `docs/master_plan.md` is the single status entry point: pipeline state, what's built, issues
 hit and the fixes in place, current test-set results, and sequenced next steps.
+
+**Current state (keep this line current):** test set at **63 exact / 14 approximate / 3
+unresolved**, which is the ceiling - the three left (captain x2, offside calls) cannot be
+answered from any available data. Stages 0, 1, 3 and 4 are built; Tier 3 is complete.
+Stage 2 (query parsing) is built and being evaluated against a real model. Stage 5
+(ranking/clip output) has not been started.
 
 ## Reference files in this folder
 - `coach_question_test_set.md` — 80 seed questions across 8 categories (player-specific,
@@ -78,17 +85,30 @@ hit and the fixes in place, current test-set results, and sequenced next steps.
   flip), the metric definitions for the 4 tracking-blocked questions, and a catalogue of
   further tracking features (pitch control, set-piece geometry, dyadic relations, movement
   quality, clip boundaries). Its §2 precompute architecture is superseded.
-- `docs/tier3_lazy_retrieval_plan.md` — **the adopted Tier 3 design.** Phase 1 event filters
-  produce a candidate set (median 156 events), then only those events' tracking frames are
-  fetched via a frame->byte-offset index (0.16s/match to build, 1.79ms per 50-frame window)
-  and each candidate is confirmed geometrically. Typical query ~280ms. Also fills in the
-  previously-undesigned Validation stage. Recommends a thin eager base for cheap per-frame
-  scalars (22us/frame) and team baselines, staying lazy for expensive geometry (convex hull
-  at 625us/frame) and anything dyadic or query-parameterised.
+- `docs/tier3_lazy_retrieval_plan.md` — **the adopted Tier 3 design, now complete.** Phase 1
+  event filters produce a candidate set (median 156 events), then only those events' tracking
+  frames are fetched via a frame->byte-offset index and each candidate is confirmed
+  geometrically. Measured on real event windows: **~6ms per window cold, ~1.8ms warm** (OS page
+  cache), and **parsing is 96% of fetch cost**, so frame sampling is the dominant optimisation.
+  An earlier "1.79ms / 280ms per query" figure came from random frames plus a warm cache and
+  is superseded. The eager base came out narrower than planned: only `player_baselines` and
+  `phase_shape` were built, since nothing needed per-frame team scalars.
+- `scripts/frame_index.py`, `mirror_sign.py`, `predicates.py` — Tier 3 foundation: window
+  fetch with coverage, the measured tracking/event coordinate sign (80 groups at 100%
+  confidence), and the predicate harness (`--selftest` reproduces a Gold column from
+  tracking at 100%).
+- `scripts/setpiece.py`, `defensive.py`, `dyadic.py`, `tracking_base.py` — the tracking
+  predicates that resolved Q56, Q59, Q66, Q68, Q70, plus the per-player positional baselines.
+- `scripts/query_parse.py`, `query_schema.py` — **stage 2**, the 8-gate parsing chain and its
+  per-gate field vocabulary / `validate_filter()` guardrail. `--offline` runs a keyword stub.
+- `scripts/parse_cost.py`, `parse_eval.py` — measured stage 2 cost, and grading against the
+  hand-written queries. Parses are saved, so `parse_eval.py --regrade` costs nothing.
+- `scripts/env.py` / `.env` — the Anthropic credential. `.env` is **gitignored**;
+  `.env.example` documents it. Never read or print `.env`.
 - `scripts/test_all_questions.py` — the full follow-up: all 80 questions from
   `coach_question_test_set.md` run against all 20 real matches (94,517 events), each
   tagged exact/approximate/unresolved. **47 exact, 22 approximate, 11 unresolved** at the
-  time of that pass — now 57/16/7 after Tier 1+2 enrichment, see `docs/enrichment.md`. Full
+  time of that pass; 57/16/7 after Tier 1+2 enrichment; **63/14/3 now** after Tier 3. Full
   results and analysis in `docs/real_data_validation.md`'s second half, including:
   Category 6 (comparative/relational) turned out to be mostly resolvable from per-event
   fields (`separation_start/end`, `interplayer_distance`) without raw tracking, contrary
@@ -123,7 +143,9 @@ design.
    (phase 1: event-level filtering) then, if a spatial condition was flagged, a second
    pass against raw tracking data for fine-grained geometric confirmation (phase 2).
 4. **Validation** — confirm the retrieved candidates actually answer the coach's
-   question (stage not yet designed in detail).
+   question. **Built:** the phase-2 predicate harness (`scripts/predicates.py`) is the
+   validation - it confirms each candidate against tracking and returns evidence frames,
+   with `insufficient_data` kept distinct from a negative.
 5. **Output/ranking** — return a ranked list of clip segments (ranking logic is a
    TODO, explicitly left for later).
 
@@ -182,23 +204,20 @@ emitted, and `query_schema.validate_filter()` on every filter, which rejects a c
 is null for the event type it targets.
 
 ## Open / not yet decided
-- Validation stage design.
-- Clip ranking logic — now more concrete since `scripts/test_all_questions.py` reports raw
-  event/row hit counts, not deduplicated clips; still need to decide how multiple matching
-  rows within one possession collapse into a single clip.
-- Whether/when to add a vector-embedding fallback path for the structured filters that
-  can't cover a question (explicitly deferred, not rejected).
-- **7** unresolved test-set questions remain (down from 11), in 3 groups: captain identity
-  (5, 78 — genuinely absent from SkillCorner, needs an external roster source);
-  multi-player tracking geometry (17, 56, 59 — Tier 3); and two untagged concepts
-  (27 offside, 66 "tracked back"). Goal timestamps and defender-beaten flags turned out to
-  be derivable after all — see `docs/enrichment.md`.
-- Tracking data is **no longer a blocker**: `git lfs pull` works anonymously and all 20
-  matches (1.82 GB) fetch fine via `scripts/fetch_match_data.sh all --tracking`. Tier 3 is
-  buildable, not just plannable.
-- The actual query-parsing chain (LLM prompt(s) that turn a coach's question into the
-  8-gate structured query) — everything so far has hand-written the target query for a
-  known test-set question; no code yet turns free text into one.
+- **Stage 2 extraction quality.** The chain is built and its guardrails are verified, but
+  how well a real model turns questions into filters is being measured now
+  (`scripts/parse_eval.py`). Until that finishes, assume nothing about accuracy.
+- **Clip ranking and output (stage 5)** - not started. `team_possession_id` already
+  collapses matching rows within one possession (Q66 turnovers go 749 -> 661), and phase-2
+  predicates return evidence frames usable as clip in/out points, but ranking itself is
+  undecided.
+- **Captain identity** - needs an external roster source; `data/captains.json` is the hook.
+- Whether/when to add a vector-embedding fallback (explicitly deferred, not rejected). Its
+  strongest case is query-by-example, which needs stage 5's clips to exist first.
+
+Resolved since this list was first written: the validation stage (the phase-2 predicate
+harness *is* the validation), the query-parsing chain (built), and every buildable
+unresolved question (Tier 3 complete).
 
 ## Working style notes
 - Brainstorm-then-build sequencing was intentional: test set first, then architecture,

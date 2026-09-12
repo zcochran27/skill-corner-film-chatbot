@@ -24,7 +24,10 @@ brief and architecture decisions.
 - `docs/real_data_validation.md` — the first two validation passes (its 47/22/11 headline is
   superseded; see below).
 - `docs/enrichment.md` — Tier 1 + Tier 2 enrichment: 32 derived columns that took the test
-  set to **57 exact, 16 approximate, 7 unresolved**.
+  set from 47 exact to 57. Tier 3 then took it to **63 exact, 14 approximate, 3 unresolved**,
+  the ceiling; the three left cannot be answered from any available data.
+- `docs/answerability.md` — what the chatbot must say when the data cannot answer.
+- `docs/data_architecture.md` — the mandated bronze/silver/gold layout.
 - `docs/field_catalog.md` — generated event_type x column availability map. Read before
   writing a filter: 168 of 354 columns are populated on exactly one event_type.
 - `docs/tier3_lazy_retrieval_plan.md` — the adopted Tier 3 design (lazy per-event tracking
@@ -50,6 +53,17 @@ Stage 2 (question -> structured query) needs an Anthropic API key. Copy `.env.ex
 variables stay documented. Without a key, `--offline` still exercises the chain and both
 guardrails using a keyword stub, which proves the plumbing but says nothing about how well
 questions are actually parsed.
+
+```bash
+python scripts/parse_cost.py --calibrate 23,70,75   # measure real cost on a few questions
+python scripts/parse_eval.py --sample               # grade 20 questions against ground truth
+python scripts/parse_eval.py --regrade              # re-grade saved parses, no API calls
+```
+
+Parsing costs roughly **$0.05-0.07 per question** on `claude-opus-5`, and about 90% of that is
+output and thinking tokens. Caching makes input nearly free. A full 80-question run is about
+$5.50. Check the cost with `parse_cost.py` before a large run, because every API call spends
+money.
 
 Data follows a mandated bronze/silver/gold layout — see
 [`docs/data_architecture.md`](docs/data_architecture.md). Bronze is immutable raw; each

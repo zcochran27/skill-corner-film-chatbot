@@ -67,6 +67,12 @@ Cleaned, typed, one table per entity. Built by `scripts/build_silver.py`.
 | `phases.parquet` | one row per phase | 8,874 rows |
 | `tracking_index.parquet` | one row per match | frame counts + source file fingerprint |
 | `tracking_index/{id}_frames.npy`, `{id}_offsets.npy` | one entry per frame | 1,244,814 frames indexed |
+| `mirror_signs.parquet` | one row per (match, team, period) | 80 groups, all at 100% confidence |
+
+`mirror_signs.parquet` is the measured sign relating absolute tracking coordinates to each
+row's mirrored event frame. It sits in Silver for the same reason the frame index does: it
+makes Bronze readable rather than adding football meaning. Built by `scripts/mirror_sign.py`
+from inside `build_silver.py`.
 
 **Typing is the main job.** The raw CSVs give 130 object-dtype columns costing 635 MB in
 memory, of which 58 are booleans. Those currently hold real Python bools, so `col == True`
@@ -93,9 +99,16 @@ Query-ready. Built by `scripts/build_gold.py`, which applies the derivations in
 | `events_enriched.parquet` | one row per event | 94,517 × 355, incl. 32 derived columns |
 | `goals.parquet` | one row per goal | 66, validated against all 20 official scores |
 | `possession_chains.parquet` | one row per team possession | 4,071, with frame spans |
+| `phase_shape.parquet` | one row per phase | 8,874, team width as a percentile and z-score against that team's own norm |
+| `player_baselines.parquet` | one row per (match, player) | 618 defending positional baselines; built by `scripts/tracking_base.py` |
+| `parse_calibration.json` | one record per API call | stage 2 cost calibration: token usage only, never content |
+| `parse_eval.json` | one record per parsed question | stage 2 accuracy runs, saved so grading can be re-run without re-spending |
 
-Planned (Tier 3 thin eager base, see below): `frame_scalars.parquet`,
-`team_baselines.parquet`.
+`phase_shape` and `player_baselines` are the thin eager base, and it came out narrower than
+planned. `frame_scalars.parquet` and `team_baselines.parquet` were proposed but deliberately
+**not built**: their justification was Q17's team shape, and Q17 turned out to be answerable
+from `_phases_of_play.csv` with no tracking at all. The two JSON files are the only Gold
+artefacts not derived from match data; they record what the parser cost and how it scored.
 
 ---
 
@@ -103,11 +116,12 @@ Planned (Tier 3 thin eager base, see below): `frame_scalars.parquet`,
 
 This is the part the medallion framing makes clearest, and it encodes the adopted design:
 
-- **Gold = precomputed.** Only cheap, targetable, broadly-reused tracking fields belong
-  here: per-frame scalars (block width/height/centroid, nearest-opponent distance) at
-  ~22 µs/frame, ~39s for the whole corpus, plus the per-team baselines derived from them.
-  Baselines *must* be Gold — "narrower than their own average" is a corpus statistic that
-  lazy per-event evaluation cannot compute by definition.
+- **Gold = precomputed.** Only cheap, targetable, broadly reused fields belong here, and
+  **corpus statistics must** — "narrower than their own norm" or "far from where he usually
+  stands" cannot be computed from a single candidate's window. What actually landed is
+  `player_baselines.parquet` (defending position per player, which Q56 needs) and
+  `phase_shape.parquet` (team width against each team's own norm, which Q17 needs). The
+  per-frame team scalars proposed earlier were not built, because nothing needed them.
 - **The lazy sweep reads Silver, not Gold.** Advanced geometry (convex hull at 625 µs/frame,
   pitch control, anything dyadic or query-parameterised) is evaluated at query time against
   Bronze tracking via the Silver frame index. Precomputing it into Gold would defeat the
@@ -164,6 +178,6 @@ which build step to run if a table is missing.
 | On-disk (events) | 89 MB CSV | 34 MB Silver + 16 MB Gold |
 | Validation | ad hoc, inside analysis scripts | enforced gate that fails the build |
 
-Test-set results are unchanged through the refactor — **57 exact / 16 approximate /
-7 unresolved**, identical to the pre-layer run, which is the check that the migration
+Test-set results were unchanged through the refactor — **57 exact / 16 approximate /
+7 unresolved** at the time, identical to the pre-layer run, which is the check that the migration
 preserved behaviour rather than quietly altering it.

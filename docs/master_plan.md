@@ -23,6 +23,9 @@ Single entry point for where this project stands. Start here, then follow the li
 | `scripts/tracking_base.py` | Eager per-player positional baselines (Gold) |
 | `scripts/query_parse.py` | Stage 2: the 8-gate parsing chain (`--offline`, `--test-set`) |
 | `scripts/query_schema.py` | Per-gate field vocabulary + `validate_filter()` guardrail |
+| `scripts/env.py` | Loads the gitignored `.env`; one place for credential resolution |
+| `scripts/parse_cost.py` | Measured stage 2 cost calibration and full-run projection |
+| `scripts/parse_eval.py` | Stage 2 accuracy grading against the hand-written queries |
 | `docs/test_results_enriched.md` | Current full 80-question run output |
 
 ---
@@ -35,7 +38,7 @@ Single entry point for where this project stands. Start here, then follow the li
 |---|---|---|
 | 0. Data layers | **Built** | Bronze/silver/gold mandated; consumer load 9.8s -> 0.73s |
 | 1. Preprocessing / enrichment | **Built** | `enrich.py` derivations applied by `build_gold.py`, 32 derived columns |
-| 2. Query parsing (8 gates) | **Built, unverified** | `query_parse.py` - chain + both guardrails work offline; needs an API key to validate real extraction |
+| 2. Query parsing (8 gates) | **Built, being evaluated** | `query_parse.py` - guardrails verified; 20-question accuracy sample running against `claude-opus-5` |
 | 3. Retrieval — phase 1 (events) | **Built** | Median 5ms, max 75ms across 73 timed questions |
 | 3. Retrieval — phase 2 (tracking) | **Working** | Q66/Q68/Q70 exact via tracking; 1.6-7.0s vs a 7.7ms event-filter median |
 | 4. Validation | **Designed** | Folded into phase 2: the predicate *is* the validation |
@@ -112,12 +115,13 @@ Every category has a majority resolved, and the two weakest (Negative/absence, C
 are weak for a stated reason: both depend on relational or counterfactual conditions that
 event rows only partly express.
 
-**The 7 unresolved, by what would actually fix them:**
+**The 3 unresolved, and why nothing further can fix them** (struck-through rows were
+resolved along the way):
 
 | # | Question | Blocked on |
 |---|---|---|
 | 5, 78 | captain | External roster data — not in SkillCorner at all |
-| — | *(all five now have registered refusal text — see `docs/answerability.md`)* | |
+| — | *(all three carry registered refusal text — see `docs/answerability.md`)* | |
 | ~~17~~ | ~~block shape~~ | **resolved from phases, no tracking needed** - see 4h |
 | ~~59~~ | ~~foot race~~ | **resolved** - `scripts/dyadic.py` |
 | ~~56~~ | ~~dragged out of position~~ | **resolved** - `scripts/dyadic.py` + player baselines |
@@ -126,13 +130,17 @@ event rows only partly express.
 
 **The 14 approximate** (6, 7, 18, 25, 36, 44, 48, 55, 57, 62, 67, 69, 74, 79) split
 roughly into: semantic narrowing where the coach's concept is finer than any available flag
-(through ball, cutback, "game management"), set-piece geometry that Tier 3 will make exact
-(68, 70), cover-rotation geometry (69), and unverifiable counterfactuals (67, 74).
+(through ball, cutback, "game management"), cover-rotation geometry (69), and unverifiable
+counterfactuals (67, 74). Set-piece geometry (68, 70) used to be on this list; Tier 3 made
+both exact.
 
-**Timing.** 73 timed questions: total 727ms, median 5.5ms, max 75ms. Enrichment moved
-several of the slowest off the phase-join path — Q43 went from 289ms (previously the
-slowest) to 7ms. Retrieval is not and will not be the bottleneck; the LLM parsing call in
-stage 2 will dominate.
+**Timing.** 77 timed questions. The event-level ones run in single-digit to tens of
+milliseconds, with a median around 17ms. The five tracking questions take 2-15 seconds each,
+and Q66 (recovery runs over 661 turnovers) is the slowest. That spread is the phase-1/phase-2
+contrast working as designed. Enrichment moved several slow event queries off the phase-join
+path: Q43 went from 289ms to 7ms. Retrieval is still not the bottleneck. Stage 2 parsing costs
+roughly 30-50s per question across 8 sequential API calls, which is more than all of
+retrieval combined.
 
 **One zero-hit query remains, and it is a real finding:** Q6 (GK passing into midfield under
 pressure) returns 0 across all 20 matches. Every GK pass into the middle third in the corpus
@@ -281,6 +289,36 @@ is failure mode 4a again, with a different trigger and a much wider blast radius
 
 ---
 
+## 4j. Stage 2 cost - measured before spending
+
+Every parsing run costs real money, so the cost was measured on a small calibration sample
+before any large run (`scripts/parse_cost.py`). Output tokens cannot be derived from input:
+adaptive thinking decides per call how much to reason, so an estimate made without running
+the model is a guess.
+
+Calibration: 3 questions spanning simple, negative and composite, 24 calls, **$0.23**.
+
+| | Share of spend |
+|---|---|
+| Input, uncached (just the question, ~35 tokens/call) | ~0% |
+| Cache writes + reads (per-gate prompt and schema) | small |
+| **Output, including thinking** | **90%** |
+
+- **Caching works on all 8 gates.** One correction: the `negative` gate's instructions alone
+  are 440 tokens, under Opus 5's 512-token cache minimum, and at first that looked like it
+  would never cache. It does cache, because the structured-output schema is inside the cached
+  prefix and brings it to about 1,000 tokens. **Measure cache hits instead of predicting them
+  from prompt length.**
+- **Output is the bill.** Input is nearly free once cached, so trimming prompts saves almost
+  nothing. Effort is the real lever, but lowering it before a quality baseline exists would
+  mix up "is the parser good" with "is it good at low effort".
+- **Projection for all 80 questions:** about **$5.50** (range roughly $3.90-$7.20), or $9.33 if
+  caching never engaged. About 50 minutes run sequentially. `event_type` is the costliest gate
+  at ~$0.015 per call, which fits: it decides which columns exist for every later gate.
+- **Levers not yet pulled:** the Batch API (~50% off at the same quality; fits a one-off
+  eval), and running gates in parallel (~50 min -> ~10 min at the same cost). Neither is worth
+  doing until the quality baseline says the parser is worth running at scale.
+
 ## 5. Architecture decisions locked in
 
 1. **Deterministic structured filtering, no embeddings for v1.** Holds up: 73 of 80
@@ -362,7 +400,7 @@ similarity search here, and they do not share a verdict:
   semantic-narrowing approximates (through ball, cutback, "game management"). SkillCorner
   ships prior art: `Part6_BuildYourOwnMetric_Detecting_and_Evaluating_Cutback_Opportunities.ipynb`
   in their tutorials repo is Q18's exact problem.
-- **It would be strictly worse for the 59 exact questions**, which already resolve
+- **It would be strictly worse for the 63 exact questions**, which already resolve
   deterministically in milliseconds with guarantees.
 
 Two arguments against reaching for it sooner, both learned from Q68:
