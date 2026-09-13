@@ -26,6 +26,7 @@ Single entry point for where this project stands. Start here, then follow the li
 | `scripts/env.py` | Loads the gitignored `.env`; one place for credential resolution |
 | `scripts/parse_cost.py` | Measured stage 2 cost calibration and full-run projection |
 | `scripts/parse_eval.py` | Stage 2 accuracy grading against the hand-written queries |
+| `scripts/parse_exec.py` | Grades parses by EXECUTING them against Gold - the metric to trust |
 | `docs/test_results_enriched.md` | Current full 80-question run output |
 
 ---
@@ -38,7 +39,7 @@ Single entry point for where this project stands. Start here, then follow the li
 |---|---|---|
 | 0. Data layers | **Built** | Bronze/silver/gold mandated; consumer load 9.8s -> 0.73s |
 | 1. Preprocessing / enrichment | **Built** | `enrich.py` derivations applied by `build_gold.py`, 32 derived columns |
-| 2. Query parsing (8 gates) | **Built, being evaluated** | `query_parse.py` - guardrails verified; 20-question accuracy sample running against `claude-opus-5` |
+| 2. Query parsing (8 gates) | **Built, NOT ready** | First real evaluation: refusals fixed to 20/20, but only 5 of 13 comparable questions return the right rows. Gates duplicate each other. See 4k |
 | 3. Retrieval — phase 1 (events) | **Built** | Median 5ms, max 75ms across 73 timed questions |
 | 3. Retrieval — phase 2 (tracking) | **Working** | Q66/Q68/Q70 exact via tracking; 1.6-7.0s vs a 7.7ms event-filter median |
 | 4. Validation | **Designed** | Folded into phase 2: the predicate *is* the validation |
@@ -288,6 +289,61 @@ is failure mode 4a again, with a different trigger and a much wider blast radius
   out); `json.load` needs explicit `encoding="utf-8"` or cp1252 breaks on player names.
 
 ---
+
+## 4k. Stage 2's first real evaluation - not ready for a full run
+
+20 questions against `claude-opus-5`, **$1.19**, graded against the hand-written queries
+(`scripts/parse_eval.py`). Two numbers matter and they disagree sharply:
+
+| Metric | Result | Trust it? |
+|---|---|---|
+| Column recall - did it pick the right columns | 71% | **No.** Badly overstates quality |
+| **Executed against Gold - does it return the right rows** | **5 of 13** | Yes. This is the headline |
+
+**Refusals failed 3 of 3, then were fixed to 20 of 20 at no cost.** The model correctly
+recognised captain and offside, but described them in free text ("captain (player role
+attribute)", "offside call") while the registry was an exact-key lookup, so nothing matched.
+It also filtered `is_captain == True`. That column exists and is always False, so it passed
+every check and would have returned zero rows. Three fixes: free-text concept matching,
+`validate_filter()` rejecting values a column never takes, and never-true columns no longer
+shown to the model. All three were verified by re-applying them to the model's saved output,
+without another API call.
+
+**Column recall is misleading, because correct columns can still produce a wrong answer:**
+
+| Q | Column recall | Executed |
+|---|---|---|
+| 35 | 67% | **zero rows** |
+| 39 | 50% | finds 4% of the answer |
+| 42 | **100%** | finds 26% of the answer |
+
+**The systematic flaw: gates duplicate each other.** Each gate sees only the question, never
+what earlier gates emitted, so several gates encode the same idea at different levels, and
+requiring all of them to match silently shrinks the answer. In Q42 the `sequence` gate
+emitted exactly the right query (pressing chain, length >= 3, ended in a regain), and the
+`event_type` gate independently added `end_type in [direct_regain, indirect_regain]`. That
+keeps only the one engagement that won the ball. Every filter was valid; the answer was cut to
+a quarter. Q35 goes to zero because "reached the final third" was encoded by both `sequence`
+(the chain reached it) and `spatial` (this row ends there), and no build-up row starting from
+a goal kick satisfies both. **This is an architecture problem, not a prompt problem.** The
+current chain runs 8 independent calls in a row, not a true chain.
+
+**The opposite failure: the gate recognises the idea but emits no filter for it.** Q55 found
+all the right rows buried among 197x as many. The comparative gate named "1v1 isolation"
+and wrote no filter. Q25 (111x) and Q21 (17x) behave the same way.
+
+Also found, and fixed:
+- **6 of 80 ground-truth labels named columns their own query never uses.** Q25's label said
+  `event_subtype`; its query filters `first_line_break`. The grader now reads what each query
+  actually executes, which cannot drift.
+- **`number` and `is_substitute` were never in Gold.** The test suite joined them in itself,
+  so the parser's vocabulary said they didn't exist, and Q2 and Q80 would have failed in a
+  full run. Both are now in Gold. The suite still gives 63/14/3 with identical hit counts.
+
+**Recommendation: do not run the full 80 yet.** At 5 of 13, most of the ~$5.50 would go to
+measuring a known problem. Fix the duplication first: pass each gate the filters earlier gates
+emitted, and add a check that runs the finished query and flags a zero-row result. Then re-run
+this same 20-question sample (about $1.20) and compare against 5/13.
 
 ## 4j. Stage 2 cost - measured before spending
 

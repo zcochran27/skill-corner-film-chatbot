@@ -339,7 +339,7 @@ def parse(question: str, client=None, verbose: bool = False) -> ParsedQuery:
             col = f.get("column")
             try:
                 for et in targets:
-                    validate_filter(col, et)
+                    validate_filter(col, et, f.get("op"), f.get("value"))
                 res.filters.append(f)
             except FilterError as e:
                 res.rejected.append({"filter": f, "why": str(e)})

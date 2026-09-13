@@ -75,6 +75,7 @@ DERIVED_COLUMNS = [
     "opp_six_yard_box_start", "opp_six_yard_box_end",
     "own_penalty_area_reception", "opp_penalty_area_reception",
     "own_six_yard_box_reception", "opp_six_yard_box_reception",
+    "number", "is_substitute",
     "is_starter", "team_back_line_size", "team_front_line_size",
     "team_pivot_size", "is_starting_cb_pair", "is_captain",
 ]
@@ -421,6 +422,24 @@ def load_captains() -> dict:
             for mid, teams in raw.items() for tid, pid in teams.items()}
 
 
+def add_roster_attributes(events: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame:
+    """Shirt number and substitute status, joined from the Silver players table.
+
+    These used to be joined only inside scripts/test_all_questions.py at query time, so they
+    never reached Gold. Retrieval worked because the test suite did its own merge - but the
+    query parser reads Gold, so its field vocabulary reported both as "unavailable in this
+    dataset" and could not have answered Q2 ("their number 9") or Q80 (substitutes). Gold is
+    what retrieval filters on, so anything retrieval filters on belongs here.
+    """
+    roster = players[["match_id", "player_id", "number", "is_substitute"]].drop_duplicates(
+        subset=["match_id", "player_id"])
+    merged = events[["match_id", "player_id"]].merge(roster, on=["match_id", "player_id"],
+                                                     how="left")
+    events["number"] = merged["number"].to_numpy()
+    events["is_substitute"] = merged["is_substitute"].fillna(False).astype(bool).to_numpy()
+    return events
+
+
 def add_captain_flag(events: pd.DataFrame) -> pd.DataFrame:
     caps = load_captains()
     if not caps:
@@ -448,6 +467,7 @@ def build_enriched(events, matches, players, verbose: bool = False):
     events = add_possession_chains(events)
     events = add_zone_flags(events, matches)
     events = add_unit_flags(events, players)
+    events = add_roster_attributes(events, players)
     events = add_captain_flag(events)
     return events.copy(), goals          # copy() defragments after many column inserts
 

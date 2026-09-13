@@ -155,6 +155,26 @@ def availability() -> dict:
     return out
 
 
+@lru_cache(maxsize=4096)
+def observed_values(column: str, event_type: str | None = None) -> frozenset | None:
+    """Distinct values a low-cardinality column actually takes (on one event type, if given).
+
+    None for high-cardinality or numeric columns, where "does this value occur" is not a
+    meaningful check. Values are normalised to lower-case strings so a JSON `true` from the
+    model compares equal to a numpy True in the data.
+    """
+    ev = _events()
+    if column not in ev.columns:
+        return None
+    s = ev[column] if event_type is None else ev.loc[ev.event_type == event_type, column]
+    s = s.dropna()
+    dtype = str(ev[column].dtype)
+    if dtype not in ("bool", "boolean", "category") and not (
+            ev[column].dtype == object and ev[column].nunique(dropna=True) <= MAX_ENUM):
+        return None
+    return frozenset(str(v).lower() for v in s.unique())
+
+
 @lru_cache(maxsize=1)
 def _fields() -> dict:
     ev = _events()
@@ -166,6 +186,12 @@ def _fields() -> dict:
         s = ev[col]
         dtype = str(s.dtype)
         if dtype in ("bool", "boolean"):
+            # A boolean that is never True cannot answer "where X is true", so it is left
+            # out of the card entirely. Advertising is_captain - all False until
+            # data/captains.json is populated - led the model to filter is_captain == True in
+            # the first real evaluation, a query that could only ever return zero rows.
+            if not s.fillna(False).astype(bool).any():
+                continue
             kind, values = "bool", ()
         elif dtype == "category" or (s.dtype == object and s.nunique(dropna=True) <= MAX_ENUM):
             kind = "enum"
@@ -192,7 +218,8 @@ def card_for(gate: str) -> str:
     return "\n".join(lines)
 
 
-def validate_filter(column: str, event_type: str | None = None) -> None:
+def validate_filter(column: str, event_type: str | None = None,
+                    op: str | None = None, value=None) -> None:
     """Raise unless `column` exists and is populated for `event_type`.
 
     This is the guardrail against the project's dominant failure mode. Filtering a column
@@ -213,6 +240,21 @@ def validate_filter(column: str, event_type: str | None = None) -> None:
             f"{column!r} is never populated on {event_type!r} rows "
             f"(only on {', '.join(populated)}). Filtering it there would return zero rows "
             f"silently, which reads as a finding rather than a mistake.")
+
+    # The column can hold values - but can it hold THIS one? A populated column checked for a
+    # value it never takes is the same silent zero one step removed: is_captain is 100%
+    # populated and 100% False, so `is_captain == True` passed the checks above and could
+    # only ever match nothing.
+    if op in ("eq", "in") and value is not None:
+        seen = observed_values(column, event_type)
+        if seen is not None:
+            wanted = value if isinstance(value, list) else [value]
+            missing = [v for v in wanted if str(v).lower() not in seen]
+            if missing and len(missing) == len(wanted):
+                where = f" on {event_type!r} rows" if event_type else ""
+                raise FilterError(
+                    f"{column!r} never takes the value(s) {missing!r}{where} - "
+                    f"observed: {sorted(seen)[:12]}. The filter could only match zero rows.")
 
 
 def main() -> None:

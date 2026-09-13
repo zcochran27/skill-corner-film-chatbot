@@ -61,8 +61,8 @@ def load_roster() -> pd.DataFrame:
 
 def main() -> None:
     events, n_matches = load_events()
-    roster = load_roster()
-    events = events.merge(roster, on=["match_id", "player_id"], how="left")
+    # number / is_substitute now arrive from Gold (enrich.add_roster_attributes). Re-merging
+    # the roster here would duplicate them as number_x / number_y and break Q2 and Q80.
 
     TRACKED = set(available_matches())
     roster_full = pd.read_parquet(SILVER / "players.parquet")
@@ -158,10 +158,10 @@ def main() -> None:
         "", lambda: PP[(PP.inside_defensive_shape_start == True) & (PP.start_type == "pass_reception")])
     add(20, "Spatial", "exact", "last_line_break",
         "", lambda: PP[PP.last_line_break == True])
-    add(21, "Spatial", "exact", "opp_six_yard_box_reception, opp_penalty_area_reception (derived)",
+    add(21, "Spatial", "exact", "end_type, opp_six_yard_box_reception (derived)",
         "real six-yard geometry (5.5m x 18.32m) scaled per match, measured at the RECEPTION point (player_targeted_*_reception) rather than where the passer stood; hits are deliveries into the six-yard box, and swapping the flag for opp_penalty_area_reception gives the penalty-spot-area comparison the question asks for",
         lambda: PP[(PP.end_type == "pass") & (PP.opp_six_yard_box_reception)])
-    add(22, "Spatial", "exact", "player_position, channel_start, location_to_player_in_possession_start",
+    add(22, "Spatial", "exact", "player_position, channel_start, start_type",
         "", lambda: PP[(PP.player_position.isin(WINGERS)) & (PP.channel_start.isin(["wide_left", "wide_right"])) & (PP.start_type == "pass_reception")])
 
     # --- Category 3: Event-Type (23-33) ---
@@ -169,7 +169,7 @@ def main() -> None:
         "", lambda: PP[(PP.end_type == "shot") & (PP.penalty_area_end == False)])
     add(24, "Event-type", "exact", "game_interruption_before",
         "", lambda: events[events.game_interruption_before == "corner_against"])
-    add(25, "Event-type", "approximate", "event_subtype, third_start",
+    add(25, "Event-type", "approximate", "first_line_break, third_start",
         "no explicit 'through ball' tag; approximated as a line-breaking pass from the final third",
         lambda: PP[(PP.third_start == "attacking_third") & (PP.first_line_break == True)])
     add(26, "Event-type", "exact", "start_type, third_start",
@@ -241,7 +241,7 @@ def main() -> None:
         "", lambda: events[(events.minute_start < 10) & ((events.team_in_possession_phase_type == "transition") | (events.team_out_of_possession_phase_type == "defending_transition"))])
     add(47, "Game-state", "exact", "game_state, game_interruption_before",
         "", lambda: events[(events.game_state == "losing") & (events.game_interruption_before.notna())])
-    add(48, "Game-state", "approximate", "minute_start, start_type, end_type",
+    add(48, "Game-state", "approximate", "minute_start, start_type",
         "'game management' approximated as throw-in receptions or keep-possession events late in the match",
         lambda: PP[(PP.minute_start >= 80) & (PP.start_type.isin(["throw_in_reception", "keep_possession"]))])
     add(49, "Game-state", "exact", "seconds_since_goal_against (derived), event_type, event_subtype",
@@ -310,7 +310,7 @@ def main() -> None:
         q59)
     add(60, "Comparative", "exact", "player_position, separation_start",
         "", lambda: events[(events.player_position.isin(FB)) & (events.separation_start < 2)])
-    add(61, "Comparative", "exact", "player_in_possession_position, n_teammates_ahead_start, n_player_targeted_opponents_ahead_start",
+    add(61, "Comparative", "exact", "player_position, n_teammates_ahead_start",
         "", lambda: PP[(PP.player_position.isin(PIVOT)) & (PP.n_teammates_ahead_start < 2)])
     add(62, "Comparative", "approximate", "player_position, event_type, event_subtype, pressing_chain_end_type",
         "'won' approximated as a pressing/pressure engagement whose chain ended in a regain",
@@ -408,7 +408,7 @@ def main() -> None:
         "defender was within 2.5m, replacing 'any defensive engagement in the same phase'",
         q70)
 
-    add(71, "Negative/absence", "exact", "n_passing_options, targeted, penalty_area_end",
+    add(71, "Negative/absence", "exact", "targeted, penalty_area_end",
         "computed at passing_option row level: options inside the box that were never the ball's actual destination",
         lambda: PO[(PO.penalty_area_end == True) & (PO.targeted == False)])
 

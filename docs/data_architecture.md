@@ -96,7 +96,7 @@ Query-ready. Built by `scripts/build_gold.py`, which applies the derivations in
 
 | Table | Grain | Notes |
 |---|---|---|
-| `events_enriched.parquet` | one row per event | 94,517 × 355, incl. 32 derived columns |
+| `events_enriched.parquet` | one row per event | 94,517 × 357, incl. 34 derived columns (includes `number`/`is_substitute` joined from the roster) |
 | `goals.parquet` | one row per goal | 66, validated against all 20 official scores |
 | `possession_chains.parquet` | one row per team possession | 4,071, with frame spans |
 | `phase_shape.parquet` | one row per phase | 8,874, team width as a percentile and z-score against that team's own norm |

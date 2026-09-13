@@ -49,8 +49,9 @@ hit and the fixes in place, current test-set results, and sequenced next steps.
 **Current state (keep this line current):** test set at **63 exact / 14 approximate / 3
 unresolved**, which is the ceiling - the three left (captain x2, offside calls) cannot be
 answered from any available data. Stages 0, 1, 3 and 4 are built; Tier 3 is complete.
-Stage 2 (query parsing) is built and being evaluated against a real model. Stage 5
-(ranking/clip output) has not been started.
+Stage 2 (query parsing) is built but **not ready**: its first real evaluation returns the
+right rows for only 5 of 13 comparable questions, because independent gates duplicate each
+other's filters (`docs/master_plan.md` 4k). Stage 5 (ranking/clip output) has not been started.
 
 ## Reference files in this folder
 - `coach_question_test_set.md` — 80 seed questions across 8 categories (player-specific,
@@ -101,8 +102,10 @@ Stage 2 (query parsing) is built and being evaluated against a real model. Stage
   predicates that resolved Q56, Q59, Q66, Q68, Q70, plus the per-player positional baselines.
 - `scripts/query_parse.py`, `query_schema.py` — **stage 2**, the 8-gate parsing chain and its
   per-gate field vocabulary / `validate_filter()` guardrail. `--offline` runs a keyword stub.
-- `scripts/parse_cost.py`, `parse_eval.py` — measured stage 2 cost, and grading against the
-  hand-written queries. Parses are saved, so `parse_eval.py --regrade` costs nothing.
+- `scripts/parse_cost.py`, `parse_eval.py`, `parse_exec.py` — measured stage 2 cost, and
+  grading against the hand-written queries. `parse_exec.py` grades by executing parses
+  against Gold, and that is the number to trust. Parses are saved, and `--regrade` re-applies
+  the current guardrails to them, so guardrail fixes can be verified without API calls.
 - `scripts/env.py` / `.env` — the Anthropic credential. `.env` is **gitignored**;
   `.env.example` documents it. Never read or print `.env`.
 - `scripts/test_all_questions.py` — the full follow-up: all 80 questions from
@@ -204,9 +207,12 @@ emitted, and `query_schema.validate_filter()` on every filter, which rejects a c
 is null for the event type it targets.
 
 ## Open / not yet decided
-- **Stage 2 extraction quality.** The chain is built and its guardrails are verified, but
-  how well a real model turns questions into filters is being measured now
-  (`scripts/parse_eval.py`). Until that finishes, assume nothing about accuracy.
+- **Stage 2 extraction quality - measured, and not good enough yet.** 5 of 13 comparable
+  questions return the right rows. The main cause is architectural: each gate sees only the
+  question, so gates encode the same idea at different levels and the AND silently shrinks
+  the answer. The planned fix is to pass each gate the earlier gates' filters, plus a check
+  that runs the finished query and flags zero rows. **Grade with `parse_exec.py` (does the
+  query execute to the right rows?), never column recall, which reported 71% on the same run.**
 - **Clip ranking and output (stage 5)** - not started. `team_possession_id` already
   collapses matching rows within one possession (Q66 turnovers go 749 -> 661), and phase-2
   predicates return evidence frames usable as clip in/out points, but ranking itself is

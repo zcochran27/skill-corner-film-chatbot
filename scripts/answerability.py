@@ -37,6 +37,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 from dataclasses import dataclass
 
 NO_DATA = "no_data"
@@ -52,6 +53,10 @@ class Verdict:
     say: str          # verbatim user-facing text
     nearest: str | None = None      # the closest answerable alternative, if any
     questions: tuple = ()           # test-set questions this blocks
+    #: Phrases that identify this concept in free text. The parser's model names concepts
+    #: in its own words ("captain (player role attribute)", "offside call"), never as
+    #: registry keys, so an exact-key lookup silently matches nothing.
+    synonyms: tuple = ()
 
 
 #: Concepts no source in this project contains. These do not become answerable by building
@@ -68,6 +73,7 @@ NO_DATA_GAPS = {
         nearest="Ask for a named player or a shirt number instead, and I can answer the "
                 "same question exactly.",
         questions=(5, 78),
+        synonyms=("captain", "armband", "skipper"),
     ),
     "offside_call": Verdict(
         concept="offside_call",
@@ -82,6 +88,7 @@ NO_DATA_GAPS = {
                 "a different question — it includes plenty of moments where play "
                 "continued — but it may be what you're after.",
         questions=(27,),
+        synonyms=("offside",),
     ),
 }
 
@@ -101,40 +108,62 @@ APPROXIMATE_CONCEPTS = {
         why="No through-ball tag exists; approximated as a line-breaking pass.",
         say="There's no 'through ball' tag in the data, so these are line-breaking passes "
             "from the final third — close, but broader than a true through ball.",
-        questions=(25,)),
+        questions=(25,),
+        synonyms=("through ball", "throughball", "through pass")),
     "cutback": Verdict(
         concept="cutback", kind=APPROXIMATE,
         why="No cutback tag; approximated as a pass reception inside the box without "
             "confirming the pass came from wide and behind the defence.",
         say="These are receptions in the box from a pass. I can't confirm the pass came "
             "from the byline, so some of these won't be true cutbacks.",
-        questions=(18,)),
+        questions=(18,),
+        synonyms=("cutback", "cut back", "pull back", "pullback")),
     "game_management": Verdict(
         concept="game_management", kind=APPROXIMATE,
         why="No tag; approximated as late throw-in receptions and keep-possession events.",
         say="'Game management' isn't tagged, so these are slow restarts and keep-ball "
             "events after the 80th minute — a reasonable stand-in, not the concept itself.",
-        questions=(48,)),
+        questions=(48,),
+        synonyms=("game management", "time wasting", "timewasting", "killing the game")),
     "duel_won": Verdict(
         concept="duel_won", kind=APPROXIMATE,
         why="No duel outcome; approximated as a pressing chain that ended in a regain.",
         say="There's no duel win/loss flag, so 'won' here means the pressing sequence ended "
             "with the ball recovered.",
-        questions=(62,)),
+        questions=(62,),
+        synonyms=("duel won", "won the duel", "won a duel", "duel win")),
     "numerical_advantage": Verdict(
         concept="numerical_advantage", kind=APPROXIMATE,
         why="Approximated as zero opponents ahead of the ball at possession end.",
         say="'Numerical advantage' is approximated as having no opponents goalside at the "
             "end of the possession — it doesn't count the full attacking overload.",
-        questions=(67, 74)),
+        questions=(67, 74),
+        synonyms=("numerical advantage", "numerical superiority", "overload", "outnumber", "numbers up")),
 }
 
 ALL_GAPS = {**NO_DATA_GAPS, **NOT_IMPLEMENTED_GAPS, **APPROXIMATE_CONCEPTS}
 
 
+def _normalise(text: str) -> str:
+    return " " + re.sub(r"[^a-z0-9]+", " ", str(text).lower()).strip() + " "
+
+
 def check(concept: str) -> Verdict | None:
-    """The verdict for a concept, or None when it is answerable exactly."""
-    return ALL_GAPS.get(concept)
+    """The verdict for a concept, or None when it is answerable exactly.
+
+    Accepts free text. The first real-model evaluation failed all three refusals because
+    this used to be an exact key lookup: the model wrote "captain (player role attribute)"
+    and "offside call", which recognised the concepts correctly and matched no key. Matching
+    is on whole words, so "offside" matches "offside call" but not "offsides_ratio".
+    """
+    if concept in ALL_GAPS:
+        return ALL_GAPS[concept]
+    text = _normalise(concept)
+    for verdict in ALL_GAPS.values():
+        phrases = (verdict.concept.replace("_", " "),) + tuple(verdict.synonyms)
+        if any(_normalise(ph) in text for ph in phrases):
+            return verdict
+    return None
 
 
 def blocked_questions() -> dict:

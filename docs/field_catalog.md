@@ -8,7 +8,7 @@ event_type you are filtering returns zero rows silently - that is how three
 queries in the first full test-set pass produced empty results that looked like
 real findings rather than bugs.
 
-- 354 columns total (32 derived by `scripts/enrich.py`)
+- 356 columns total (34 derived by `scripts/enrich.py`)
 - 168 columns are populated on exactly ONE event_type
 - 28 columns are missing entirely from at least one match
 
@@ -577,4 +577,6 @@ Filtering these on any other event_type yields an empty result, not an error.
 | `team_front_line_size` | yes | 100.0% | 100.0% | 100.0% | 100.0% | 20/20 |
 | `team_pivot_size` | yes | 100.0% | 100.0% | 100.0% | 100.0% | 20/20 |
 | `is_starting_cb_pair` | yes | 100.0% | 100.0% | 100.0% | 100.0% | 20/20 |
+| `number` | yes | 100.0% | 99.9% | 99.9% | 100.0% | 20/20 |
+| `is_substitute` | yes | 100.0% | 100.0% | 100.0% | 100.0% | 20/20 |
 | `is_captain` | yes | 100.0% | 100.0% | 100.0% | 100.0% | 20/20 |
