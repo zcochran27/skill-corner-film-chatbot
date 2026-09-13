@@ -22,62 +22,61 @@ Usage:
     python scripts/test_all_questions.py > /tmp/all_questions_results.md
 """
 
-import glob
-import json
+import sys
 import time
 from pathlib import Path
 
 import pandas as pd
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "matches"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from enrich import load_enriched  # noqa: E402
+from frame_index import available_matches  # noqa: E402
+from predicates import OK as PRED_OK, evaluate  # noqa: E402
+from setpiece import (  # noqa: E402
+    CORNER_WINDOW, _corners, attacked_near_post, first_ball_contested,
+)
+from defensive import (  # noqa: E402
+    RECOVERY_WINDOW, _candidates as _turnovers, recovery_run,
+)
+from dyadic import (  # noqa: E402
+    RACE_WINDOW, dragged_out_of_position, foot_race, pulling_runs, runs_in_behind,
+)
+from tracking_base import load_baselines  # noqa: E402
+
+SILVER = Path(__file__).resolve().parent.parent / "data" / "silver"
+GOLD = Path(__file__).resolve().parent.parent / "data" / "gold"
 
 
-def load_events() -> pd.DataFrame:
-    files = sorted(glob.glob(str(DATA_DIR / "*" / "*_dynamic_events.csv")))
-    if not files:
-        raise FileNotFoundError(f"No dynamic_events.csv files found under {DATA_DIR}")
-    dfs = [pd.read_csv(f, low_memory=False) for f in files]
-    events = pd.concat(dfs, ignore_index=True)
-    events["_pk"] = events["match_id"].astype(str) + "_" + events["phase_index"].astype(str)
-    return events, len(files)
+def load_events() -> tuple[pd.DataFrame, int]:
+    """Gold events plus the Tier 1/Tier 2 derived columns."""
+    events, _matches, _goals = load_enriched(verbose=True)
+    return events, events.match_id.nunique()
 
 
 def load_roster() -> pd.DataFrame:
-    rows = []
-    for f in sorted(DATA_DIR.glob("*/*_match.json")):
-        m = json.load(open(f))
-        for p in m["players"]:
-            rows.append(dict(
-                match_id=m["id"], player_id=p["id"], number=p.get("number"),
-                is_substitute=(p.get("start_time") not in (None, "00:00:00")),
-            ))
-    return pd.DataFrame(rows)
-
-
-def phase_reaches(events: pd.DataFrame, starts: pd.DataFrame, col: str, val: str) -> pd.DataFrame:
-    """Starting events whose phase (_pk) contains at least one row where col == val."""
-    keys = starts["_pk"].unique()
-    sub = events[events["_pk"].isin(keys)]
-    reached_keys = sub.loc[sub[col] == val, "_pk"].unique()
-    return starts[starts["_pk"].isin(reached_keys)]
+    """Silver players table - jersey number and substitute status per (match, player)."""
+    players = pd.read_parquet(SILVER / "players.parquet")
+    return players[["match_id", "player_id", "number", "is_substitute"]]
 
 
 def main() -> None:
     events, n_matches = load_events()
-    roster = load_roster()
-    events = events.merge(roster, on=["match_id", "player_id"], how="left")
+    # number / is_substitute now arrive from Gold (enrich.add_roster_attributes). Re-merging
+    # the roster here would duplicate them as number_x / number_y and break Q2 and Q80.
+
+    TRACKED = set(available_matches())
+    roster_full = pd.read_parquet(SILVER / "players.parquet")
+    matches = pd.read_parquet(SILVER / "matches.parquet")
+    phase_shape = pd.read_parquet(GOLD / "phase_shape.parquet")
 
     PP = events[events.event_type == "player_possession"]
     OBR = events[events.event_type == "off_ball_run"]
     OBE = events[events.event_type == "on_ball_engagement"]
     PO = events[events.event_type == "passing_option"]
 
-    def own_box(df):
-        # penalty_area_start/end only ever fires for the ATTACKING box (x > 0, since
-        # coordinates are mirrored so the team on the ball always attacks left-to-right).
-        # There's no equivalent flag for "defensive" box entries, so approximate with the
-        # same real-world box geometry (16.5m x 40.32m) on the negative-x side instead.
-        return (df.x_start < -36) & (df.y_start.abs() < 20.16)
+    def _b(col):
+        """SkillCorner booleans arrive as object dtype ('True'/'False' strings)."""
+        return col.astype(str).str.lower().eq("true")
 
     WINGERS = ["LW", "RW"]
     CB = ["CB", "LCB", "RCB"]
@@ -104,9 +103,9 @@ def main() -> None:
         "", lambda: events[(events.number == 9) & (events.event_type == "player_possession") & (events.penalty_area_start | events.penalty_area_end)])
     add(3, "Player-specific", "exact", "player_position, carry, x_start/x_end",
         "", lambda: PP[(PP.player_position == "RB") & (PP.carry == True) & (PP.x_start < 0) & (PP.x_end >= 0)])
-    add(4, "Player-specific", "approximate", "player_position, event_type, period",
-        "counts all CB on_ball_engagement rows, not just the starting pairing specifically",
-        lambda: events[(events.player_position.isin(CB)) & (events.event_type == "on_ball_engagement") & (events.period == 2)])
+    add(4, "Player-specific", "exact", "is_starting_cb_pair (derived), event_type, period",
+        "is_starting_cb_pair resolves 'their center back pairing' to the two CBs who started",
+        lambda: events[(events.is_starting_cb_pair) & (events.event_type == "on_ball_engagement") & (events.period == 2)])
     add(5, "Player-specific", "unresolved", "-",
         "no captain flag anywhere in match.json or dynamic_events.csv", None)
     add(6, "Player-specific", "approximate", "player_position, event_type, end_type, overall_pressure_start, third_end",
@@ -129,16 +128,29 @@ def main() -> None:
         "", lambda: PP[(PP.player_position.isin(WINGERS)) & (PP.out_to_in == True) & (PP.third_end == "attacking_third") & (PP.x_end.between(20, 40))])
     add(13, "Spatial", "exact", "channel_start",
         "", lambda: PP[(PP.channel_start.isin(["half_space_left", "half_space_right"])) & (PP.start_type == "pass_reception")])
-    add(14, "Spatial", "approximate", "player_position, x_start, game_state",
-        "'back four' approximated as CB+FB positions; 'protecting a lead' as game_state == winning",
-        lambda: events[(events.player_position.isin(CB + FB)) & (events.x_start < -5) & (events.game_state == "winning")])
+    add(14, "Spatial", "exact", "team_back_line_size (derived), player_position, x_start, game_state",
+        "'back four' now requires the team to actually have four defenders on the pitch at that frame, not just any CB/FB row",
+        lambda: events[(events.team_back_line_size == 4) & (events.player_position.isin(CB + FB)) & (events.x_start < -5) & (events.game_state == "winning")])
     add(15, "Spatial", "exact", "event_subtype, channel_start",
         "off_ball_run cross_receiver rows split by originating channel as a proxy for byline vs deeper wide crosses",
         lambda: OBR[(OBR.event_subtype == "cross_receiver") & (OBR.channel_start.isin(["wide_left", "wide_right"]))])
     add(16, "Spatial", "exact", "player_position, x_start, n_teammates_ahead_start",
         "", lambda: events[(events.player_position.isin(FB)) & (events.x_start > 10) & (events.n_teammates_ahead_start <= 1)])
-    add(17, "Spatial", "unresolved", "-",
-        "'block shape/width' is a team-shape metric over simultaneous player positions - needs raw tracking frames, not per-event rows", None)
+    def q17():
+        """Phase-level: medium blocks that were narrow against that team's OWN norm."""
+        mb = phase_shape[(phase_shape.team_out_of_possession_phase_type == "medium_block")
+                         & phase_shape.out_of_possession_width_z.notna()]
+        return mb.sort_values("out_of_possession_width_z")
+    add(17, "Spatial", "exact (phase-level, ranked)",
+        "team_out_of_possession_width_end + per-team baseline (gold/phase_shape.parquet)",
+        "NOT a tracking question after all. _phases_of_play.csv carries "
+        "team_out_of_possession_width/length per phase - columns that exist nowhere in the "
+        "events table and were never examined, because the first pass concluded phases were "
+        "redundant (true of the phase TYPE, not of these). Width is converted to a z-score "
+        "against that team's own distribution for the same phase type, since 'narrow' is "
+        "relative - a 34m block is tight for one side and normal for another. Ranked "
+        "ascending; the tightest are 15-20m against team baselines of 35-38m.",
+        q17)
     add(18, "Spatial", "approximate", "penalty_area_start, start_type",
         "'cutback' approximated as a pass reception inside the box following a pass, without confirming the pass originated wide/behind the defense",
         lambda: PP[(PP.penalty_area_start == True) & (PP.start_type == "pass_reception")])
@@ -146,10 +158,10 @@ def main() -> None:
         "", lambda: PP[(PP.inside_defensive_shape_start == True) & (PP.start_type == "pass_reception")])
     add(20, "Spatial", "exact", "last_line_break",
         "", lambda: PP[PP.last_line_break == True])
-    add(21, "Spatial", "approximate", "penalty_area_end, y_end",
-        "six-yard vs penalty-spot split approximated by |y_end| (near-goal-line width) since no six-yard-box flag exists",
-        lambda: PP[(PP.end_type == "pass") & (PP.penalty_area_end == True)])
-    add(22, "Spatial", "exact", "player_position, channel_start, location_to_player_in_possession_start",
+    add(21, "Spatial", "exact", "end_type, opp_six_yard_box_reception (derived)",
+        "real six-yard geometry (5.5m x 18.32m) scaled per match, measured at the RECEPTION point (player_targeted_*_reception) rather than where the passer stood; hits are deliveries into the six-yard box, and swapping the flag for opp_penalty_area_reception gives the penalty-spot-area comparison the question asks for",
+        lambda: PP[(PP.end_type == "pass") & (PP.opp_six_yard_box_reception)])
+    add(22, "Spatial", "exact", "player_position, channel_start, start_type",
         "", lambda: PP[(PP.player_position.isin(WINGERS)) & (PP.channel_start.isin(["wide_left", "wide_right"])) & (PP.start_type == "pass_reception")])
 
     # --- Category 3: Event-Type (23-33) ---
@@ -157,7 +169,7 @@ def main() -> None:
         "", lambda: PP[(PP.end_type == "shot") & (PP.penalty_area_end == False)])
     add(24, "Event-type", "exact", "game_interruption_before",
         "", lambda: events[events.game_interruption_before == "corner_against"])
-    add(25, "Event-type", "approximate", "event_subtype, third_start",
+    add(25, "Event-type", "approximate", "first_line_break, third_start",
         "no explicit 'through ball' tag; approximated as a line-breaking pass from the final third",
         lambda: PP[(PP.third_start == "attacking_third") & (PP.first_line_break == True)])
     add(26, "Event-type", "exact", "start_type, third_start",
@@ -166,17 +178,17 @@ def main() -> None:
         "no offside tag present in the real Dynamic Events schema (only in the original synthetic notebook's assumed field list)", None)
     add(28, "Event-type", "exact", "player_position, pass_range",
         "", lambda: PP[(PP.player_position == "GK") & (PP.pass_range == "long")])
-    add(29, "Event-type", "approximate", "end_type, x_start/y_start (own-box geometry), overall_pressure_start",
-        "penalty_area_start only flags the attacking box (see own_box() docstring); own box approximated by geometry instead",
-        lambda: PP[(PP.end_type == "clearance") & own_box(PP) & (PP.overall_pressure_start.isin(["high_pressure", "very_high_pressure"]))])
+    add(29, "Event-type", "exact", "end_type, own_penalty_area_start (derived), overall_pressure_start",
+        "own_penalty_area_start is real per-match box geometry; native penalty_area_start cannot express 'own box' because it fires for either box",
+        lambda: PP[(PP.end_type == "clearance") & (PP.own_penalty_area_start) & (PP.overall_pressure_start.isin(["high_pressure", "very_high_pressure"]))])
     add(30, "Event-type", "exact", "quick_pass, third_start",
         "", lambda: PP[(PP.quick_pass == True) & (PP.third_start == "defensive_third")])
     add(31, "Event-type", "exact", "give_and_go, initiate_give_and_go (off_ball_run only)",
         "give_and_go/initiate_give_and_go only populated on off_ball_run rows, not player_possession",
         lambda: OBR[(OBR.give_and_go == True) | (OBR.initiate_give_and_go == True)])
-    add(32, "Event-type", "approximate", "is_header, x_start/y_start (own-box geometry), game_interruption_before",
-        "restricted to *_against interruptions (defending a set piece) since penalty_area_start only flags the attacking box; own box approximated by geometry",
-        lambda: events[(events.is_header == True) & own_box(events) & (events.game_interruption_before.isin(["corner_against", "free_kick_against"]))])
+    add(32, "Event-type", "exact", "is_header, own_penalty_area_start (derived), game_interruption_before",
+        "own_penalty_area_start replaces the hardcoded x < -36 geometry, which was off by up to 0.5m on the 104m and 106m pitches",
+        lambda: events[(events.is_header == True) & (events.own_penalty_area_start) & (events.game_interruption_before.isin(["corner_against", "free_kick_against"]))])
     add(33, "Event-type", "exact", "player_targeted_dangerous, player_targeted_difficult_pass_target",
         "", lambda: PP[(PP.player_targeted_dangerous == True) & (PP.player_targeted_difficult_pass_target == True)])
 
@@ -185,37 +197,37 @@ def main() -> None:
         "", lambda: PP[(PP.start_type.isin(["recovery", "pass_interception"])) & (PP.third_start == "middle_third") & (PP.lead_to_shot == True)])
 
     def q35():
-        starts = PP[(PP.team_in_possession_phase_type == "build_up") & (PP.game_interruption_before == "goal_kick_for")]
-        return phase_reaches(events, starts, "third_end", "attacking_third")
-    add(35, "Sequence", "approximate", "team_in_possession_phase_type, game_interruption_before, third_end (phase-level)",
-        "'reached the final third' checked anywhere later in the same phase_index, not strictly the same unbroken possession chain",
+        return PP[(PP.team_in_possession_phase_type == "build_up")
+                  & (PP.game_interruption_before == "goal_kick_for")
+                  & (PP.chain_reached_final_third == True)]
+    add(35, "Sequence", "exact", "team_in_possession_phase_type, game_interruption_before, chain_reached_final_third (derived)",
+        "now checks the actual unbroken team possession rather than 'anywhere in the same phase_index'",
         q35)
 
-    add(36, "Sequence", "approximate", "end_type, player_position, lead_to_shot",
-        "'counter-attack' approximated as any header clearance by a defender that led to a shot within the pipeline's own lead_to_shot window",
-        lambda: PP[(PP.is_header == True) & (PP.end_type == "clearance") & (PP.player_position.isin(CB + FB)) & (PP.lead_to_shot == True)])
+    add(36, "Sequence", "approximate", "end_type, player_position, seconds_to_next_shot_same_team (derived)",
+        "lead_to_shot on a clearance is False in every one of the 60 header clearances in the dataset (it means 'a shot within 10s of this event', and a clearance is meant to end danger). seconds_to_next_shot_same_team measures what the question actually means - the CLEARING team shooting later - here within 30s. Still approximate: it does not verify the shot came from that same regain.",
+        lambda: PP[(PP.is_header == True) & (PP.end_type == "clearance") & (PP.player_position.isin(CB + FB)) & (PP.seconds_to_next_shot_same_team <= 30)])
     add(37, "Sequence", "exact", "n_player_possessions_in_phase, team_possession_loss_in_phase",
         "", lambda: PP[(PP.n_player_possessions_in_phase >= 5) & (PP.team_possession_loss_in_phase == True)])
     add(38, "Sequence", "exact", "give_and_go, lead_to_shot (off_ball_run)",
         "give_and_go only populated on off_ball_run rows; lead_to_shot is present on all 4 event types per schema",
         lambda: OBR[(OBR.give_and_go == True) & (OBR.lead_to_shot == True)])
-    add(39, "Sequence", "exact", "game_interruption_before, lead_to_shot",
-        "checks lead_to_shot on the corner event itself (schema defines lead_to_shot as shot within 10s; 6s is a subset we can't isolate exactly)",
-        lambda: events[(events.game_interruption_before == "corner_for") & (events.lead_to_shot == True)])
+    add(39, "Sequence", "exact", "game_interruption_before, seconds_to_next_shot_same_team (derived)",
+        "the question's real 6s window, not lead_to_shot's fixed 10s",
+        lambda: events[(events.game_interruption_before == "corner_for") & (events.seconds_to_next_shot_same_team <= 6)])
     add(40, "Sequence", "exact", "give_and_go, lead_to_shot (off_ball_run)",
         "same query as Q38, kept separate since the test-set question is phrased at the possession level rather than the off-ball-run level",
         lambda: OBR[(OBR.give_and_go == True) & (OBR.lead_to_shot == True)])
-    add(41, "Sequence", "exact", "first_line_break, second_last_line_break, last_line_break, lead_to_shot",
-        "8s window approximated by lead_to_shot (schema's own window is 10s)",
-        lambda: PP[(PP.first_line_break | PP.second_last_line_break | PP.last_line_break) & (PP.lead_to_shot == True)])
+    add(41, "Sequence", "exact", "first_line_break, second_last_line_break, last_line_break, seconds_to_next_shot_same_team (derived)",
+        "the question's real 8s window, not lead_to_shot's fixed 10s",
+        lambda: PP[(PP.first_line_break | PP.second_last_line_break | PP.last_line_break) & (PP.seconds_to_next_shot_same_team <= 8)])
     add(42, "Sequence", "exact", "pressing_chain, pressing_chain_length, pressing_chain_end_type",
         "", lambda: OBE[(OBE.pressing_chain == True) & (OBE.pressing_chain_length >= 3) & (OBE.pressing_chain_end_type == "regain")])
 
     def q43():
-        starts = PP[PP.start_type == "throw_in_reception"]
-        return phase_reaches(events, starts, "penalty_area_end", True)
-    add(43, "Sequence", "approximate", "start_type, third_end (phase-level)",
-        "'reached the box' checked anywhere later in the same phase_index",
+        return PP[(PP.start_type == "throw_in_reception") & (PP.chain_reached_box == True)]
+    add(43, "Sequence", "exact", "start_type, chain_reached_box (derived)",
+        "'reached the box' now means the same unbroken team possession reached it",
         q43)
 
     add(44, "Sequence", "approximate", "event_subtype, team_out_of_possession_phase_type",
@@ -229,15 +241,17 @@ def main() -> None:
         "", lambda: events[(events.minute_start < 10) & ((events.team_in_possession_phase_type == "transition") | (events.team_out_of_possession_phase_type == "defending_transition"))])
     add(47, "Game-state", "exact", "game_state, game_interruption_before",
         "", lambda: events[(events.game_state == "losing") & (events.game_interruption_before.notna())])
-    add(48, "Game-state", "approximate", "minute_start, start_type, end_type",
+    add(48, "Game-state", "approximate", "minute_start, start_type",
         "'game management' approximated as throw-in receptions or keep-possession events late in the match",
         lambda: PP[(PP.minute_start >= 80) & (PP.start_type.isin(["throw_in_reception", "keep_possession"]))])
-    add(49, "Game-state", "unresolved", "-",
-        "requires knowing the exact minute of the opponent's goal per match to define a 'right after conceding' window, which is not in the events table (only game_state, not goal timestamps) - would need to derive from game_interruption_before == goal_against transitions", None)
+    add(49, "Game-state", "exact", "seconds_since_goal_against (derived), event_type, event_subtype",
+        "goal timestamps are now derived per match (scripts/enrich.py, validated against all 20 official scores), so 'the 5 minutes right after conceding' is a real window",
+        lambda: OBE[(OBE.seconds_since_goal_against <= 300) & (OBE.event_subtype.isin(["pressing", "pressure", "counter_press"]))])
     add(50, "Game-state", "exact", "minute_start, team_in_possession_phase_type",
         "", lambda: PP[(PP.minute_start < 5) & (PP.team_in_possession_phase_type == "build_up")])
-    add(51, "Game-state", "unresolved", "-",
-        "same limitation as Q49 - no goal-timestamp field to anchor a window on", None)
+    add(51, "Game-state", "exact", "seconds_since_goal_for (derived)",
+        "the 2 minutes immediately after scoring, anchored on the derived goal timeline",
+        lambda: events[events.seconds_since_goal_for <= 120])
     add(52, "Game-state", "exact", "minute_start, game_state, team_in_possession_phase_type",
         "", lambda: PP[(PP.minute_start >= 80) & (PP.game_state == "losing") & (PP.team_in_possession_phase_type == "direct")])
     add(53, "Game-state", "exact", "minute_start, game_interruption_before",
@@ -253,18 +267,50 @@ def main() -> None:
     add(55, "Comparative", "approximate", "player_position, interplayer_distance, n_teammates_ahead_start",
         "'isolated' approximated as the fullback in possession with a tracked nearest-opponent distance and no teammates ahead of the ball to combine with; interplayer_distance is only populated on player_possession/passing_option rows, not on_ball_engagement",
         lambda: PP[(PP.player_position.isin(FB)) & (PP.interplayer_distance.notna()) & (PP.n_teammates_ahead_start == 0)])
-    add(56, "Comparative", "unresolved", "-",
-        "'dragged out of position' needs a before/after positional baseline for the CB across the possession, which needs raw tracking frames, not single event rows", None)
+    def q56():
+        """Phase 2: did a defender leave his line, toward the striker, after the striker moved."""
+        cand = pulling_runs(events, TRACKED)
+        res = evaluate(cand, dragged_out_of_position, RACE_WINDOW,
+                       matches=matches, players=roster_full, baselines=load_baselines())
+        ok = res[res.status == PRED_OK]
+        return ok[ok.matched].sort_values("value", ascending=False)
+    add(56, "Comparative", "exact (tracking, ranked)",
+        "dragged_out_of_position predicate + gold/player_baselines.parquet (scripts/dyadic.py)",
+        "phase 2, dyadic: measures how much further out of line a centre back was pulled "
+        "RELATIVE to the rest of his own back line, not his absolute displacement. Measuring "
+        "the absolute version first put teams pressing high at the top, where the whole line "
+        "had stepped up 25m together - a pressing scheme, not a striker dragging anyone. "
+        "Also requires the growth in displacement DURING the window (a defender already out "
+        "of line was not dragged by this run), that he closed on the forward, and that the "
+        "forward moved first by cross-correlation lag. Baselines are a corpus statistic and "
+        "so live in Gold; they cannot come from the candidate's own window, because the "
+        "excursion being measured is inside it.",
+        q56)
     add(57, "Comparative", "approximate", "player_position, last_line_break",
         "'double pivot split by a vertical pass' approximated as any line-break pass played by a DM/LDM/RDM (player_in_possession_position is null on player_possession rows since player_position already identifies the passer there; not verified geometrically as 'through the pivot')",
         lambda: PP[(PP.player_position.isin(PIVOT)) & (PP.last_line_break == True)])
     add(58, "Comparative", "exact", "n_opponents_ahead_end",
         "", lambda: PP[PP.n_opponents_ahead_end == 0])
-    add(59, "Comparative", "unresolved", "-",
-        "'foot race' needs relative speed/position over a shared window between two specific players from raw tracking, not single-player event rows", None)
+    def q59():
+        """Phase 2: two-player speed and heading over a shared window."""
+        cand = runs_in_behind(events, TRACKED)
+        res = evaluate(cand, foot_race, RACE_WINDOW,
+                       matches=matches, players=roster_full)
+        ok = res[res.status == PRED_OK]
+        return ok.sort_values("value", ascending=False)
+    add(59, "Comparative", "exact (tracking, ranked)",
+        "foot_race predicate over tracking (scripts/dyadic.py)",
+        "phase 2, dyadic: anchors on off-ball runs tagged 'behind' by a forward (which gives "
+        "the striker's identity for free), finds the opposing centre back in the frames, and "
+        "compares peak speed and heading over the frames both are tracked in. Ranked by the "
+        "LOWER of the two peak speeds - taking the minimum is what makes it a race, since a "
+        "striker sprinting away from a jogging defender is a different event. The pair is "
+        "resolved lazily: all opponent pairs would be 11x11 across 44k frames x 20 matches, "
+        "almost none of which any question asks about. Separation start->end says who won.",
+        q59)
     add(60, "Comparative", "exact", "player_position, separation_start",
         "", lambda: events[(events.player_position.isin(FB)) & (events.separation_start < 2)])
-    add(61, "Comparative", "exact", "player_in_possession_position, n_teammates_ahead_start, n_player_targeted_opponents_ahead_start",
+    add(61, "Comparative", "exact", "player_position, n_teammates_ahead_start",
         "", lambda: PP[(PP.player_position.isin(PIVOT)) & (PP.n_teammates_ahead_start < 2)])
     add(62, "Comparative", "approximate", "player_position, event_type, event_subtype, pressing_chain_end_type",
         "'won' approximated as a pressing/pressure engagement whose chain ended in a regain",
@@ -283,8 +329,25 @@ def main() -> None:
     add(65, "Negative/absence", "exact", "game_interruption_before, event_type, player_position (anti-join on phase)",
         "", q65)
 
-    add(66, "Negative/absence", "unresolved", "-",
-        "'tracked back' (defensive recovery run without a tagged event) vs 'no recovery run' can't be distinguished from off_ball_run tags alone - this is the exact anti-pattern case the original exploration flagged as needing its own window logic, and the window definition itself (what counts as 'should have recovered') isn't in the schema", None)
+    def q66():
+        """Phase 2: how hard the winger actually worked to get back after a turnover."""
+        cand = _turnovers(events, TRACKED)
+        res = evaluate(cand, recovery_run, RECOVERY_WINDOW,
+                       matches=matches, players=roster_full)
+        ok = res[res.status == PRED_OK]
+        tracked_back = ok[~ok.detail.str.startswith("did not track back")]
+        # Ranked ASCENDING by peak retreat speed: least effort first is the answer.
+        return tracked_back.sort_values("value")
+    add(66, "Negative/absence", "exact (tracking, ranked)",
+        "recovery_run predicate over tracking (scripts/defensive.py)",
+        "phase 2: measures the winger's peak speed while retreating in the 10s after his "
+        "team loses the ball in the opponent half, then ranks ascending so the least effort "
+        "comes first. No event can answer this - all ten off_ball_run subtypes describe "
+        "ATTACKING movement, so defensive work rate is absent from the event vocabulary "
+        "entirely. Also has no event anchor (the question is about a player doing nothing), "
+        "so it anchors on the turnover and finds the winger by position in the frames. "
+        "Hit count is turnovers where he tracked back at all, ranked - not a filtered answer.",
+        q66)
 
     def q67():
         counter_phases = PP[(PP.team_in_possession_phase_type == "quick_break") & (PP.n_opponents_ahead_end == 0)]
@@ -296,27 +359,56 @@ def main() -> None:
         q67)
 
     def q68():
-        corners = events[events.game_interruption_before == "corner_for"]
-        near_post_runs = OBR[OBR.event_subtype == "run_ahead_of_the_ball"]
-        merged = corners.merge(near_post_runs[["_pk"]].drop_duplicates(), on="_pk", how="left", indicator=True)
-        return merged[merged["_merge"] == "left_only"]
-    add(68, "Negative/absence", "approximate", "game_interruption_before, event_subtype (anti-join on phase)",
-        "no explicit 'near post' tag; approximated via the closest available off-ball-run subtype",
+        """Phase 2: actual near-post occupancy during the delivery's flight."""
+        cand = _corners(events[events.match_id.isin(TRACKED)], "corner_for")
+        res = evaluate(cand, attacked_near_post, CORNER_WINDOW,
+                       matches=matches, players=roster_full)
+        ok = res[res.status == PRED_OK]
+        # Ranked, not thresholded: value is the nearest approach to the near post, so the
+        # coach reads down the list rather than trusting a zone definition that would move
+        # the answer between 12% and 48%.
+        return ok.sort_values("value", ascending=False)
+    add(68, "Negative/absence", "exact (tracking, ranked)",
+        "attacked_near_post predicate over tracking (scripts/setpiece.py)",
+        "phase 2: measures each attacker's closest approach to the near post during the "
+        "delivery, replacing the run_ahead_of_the_ball proxy. Returns corners RANKED by "
+        "that distance rather than thresholded, because 'near post' is a fuzzy football "
+        "concept and any fixed zone moves the answer between 12% and 48% "
+        "(setpiece.py --sensitivity). Hit count is resolved corners, not a filtered answer. "
+        "96/107 resolve; the rest return insufficient_data, never a false 'nobody was there'.",
         q68)
 
-    add(69, "Negative/absence", "unresolved", "-",
-        "'covering defender rotated across' needs multi-player tracking geometry, not a taggable single event", None)
+    def q69():
+        beaten = OBE[(OBE.player_position.isin(FB))
+                     & (_b(OBE.beaten_by_possession) | _b(OBE.beaten_by_movement))]
+        # The cover must be a DIFFERENT defender - without excluding the beaten player's
+        # own row the anti-join matches him against himself and returns 0 every time.
+        cover = OBE[OBE.player_position.isin(CB + FB)][["_pk", "player_id"]]
+        pairs = beaten[["_pk", "player_id"]].merge(cover, on="_pk", how="left",
+                                                   suffixes=("", "_cover"))
+        has_cover = pairs[pairs.player_id_cover.notna()
+                          & (pairs.player_id_cover != pairs.player_id)]
+        covered = set(zip(has_cover._pk, has_cover.player_id))
+        return beaten[~pd.Series(list(zip(beaten._pk, beaten.player_id)),
+                                 index=beaten.index).isin(covered)]
+    add(69, "Negative/absence", "approximate", "beaten_by_possession/beaten_by_movement, player_position (anti-join on phase)",
+        "'was beaten' is a native defender-evaluation flag on on_ball_engagement rows, so only the 'no covering defender rotated across' half is a proxy (no other defensive engagement in the same phase); true cover rotation needs tracking geometry (Tier 3)",
+        q69)
 
     def q70():
-        corners_70 = events[events.game_interruption_before == "corner_against"]
-        contests_70 = OBE[OBE.event_subtype.isin(["pressing", "pressure"])]
-        merged = corners_70.merge(contests_70[["_pk"]].drop_duplicates(), on="_pk", how="left", indicator=True)
-        return merged[merged["_merge"] == "left_only"]
-    add(70, "Negative/absence", "approximate", "game_interruption_before, event_subtype (anti-join on phase)",
-        "'contested the first ball' approximated as any defensive engagement in the same phase",
+        """Phase 2: who actually reached the delivery first, and was a defender near."""
+        cand = _corners(events[events.match_id.isin(TRACKED)], "corner_against")
+        res = evaluate(cand, first_ball_contested, CORNER_WINDOW,
+                       matches=matches, players=roster_full)
+        ok = res[res.status == PRED_OK]
+        return ok[~ok.matched]
+    add(70, "Negative/absence", "exact (tracking)",
+        "first_ball_contested predicate over tracking (scripts/setpiece.py)",
+        "phase 2: the first player within 1.5m of the ball after delivery, and whether a "
+        "defender was within 2.5m, replacing 'any defensive engagement in the same phase'",
         q70)
 
-    add(71, "Negative/absence", "exact", "n_passing_options, targeted, penalty_area_end",
+    add(71, "Negative/absence", "exact", "targeted, penalty_area_end",
         "computed at passing_option row level: options inside the box that were never the ball's actual destination",
         lambda: PO[(PO.penalty_area_end == True) & (PO.targeted == False)])
 
@@ -341,19 +433,23 @@ def main() -> None:
     # --- Category 8: Composite / Blended (75-80) ---
     add(75, "Composite", "exact", "player_position, out_to_in, third_end, x_end, game_state, minute_start",
         "", lambda: PP[(PP.player_position.isin(WINGERS)) & (PP.out_to_in == True) & (PP.third_end == "attacking_third") & (PP.x_end.between(20, 40)) & (PP.game_state == "winning") & (PP.minute_start >= 75)])
-    add(76, "Composite", "unresolved", "-",
-        "inherits Q49's limitation: no goal-timestamp field to anchor a 'right after conceding' window", None)
-    add(77, "Composite", "exact", "give_and_go, third_start, lead_to_shot (off_ball_run)",
-        "give_and_go only populated on off_ball_run rows; 6s window approximated by lead_to_shot's 10s definition, same caveat as Q39/41",
-        lambda: OBR[(OBR.give_and_go == True) & (OBR.third_start == "attacking_third") & (OBR.lead_to_shot == True)])
+    add(76, "Composite", "exact", "seconds_since_goal_against (derived), player_position, speed_avg_band",
+        "no longer inherits Q49's limitation now that the goal timeline is derived",
+        lambda: OBR[(OBR.seconds_since_goal_against <= 600) & (OBR.player_position == "RB") & (OBR.speed_avg_band.isin(["hsr", "sprinting"]))])
+    add(77, "Composite", "exact", "give_and_go, third_start, seconds_to_next_shot_same_team (derived)",
+        "give_and_go only populated on off_ball_run rows; 6s is now the real window rather than lead_to_shot's 10s",
+        lambda: OBR[(OBR.give_and_go == True) & (OBR.third_start == "attacking_third") & (OBR.seconds_to_next_shot_same_team <= 6)])
     add(78, "Composite", "unresolved", "-",
         "inherits Q5's limitation (no captain flag) on top of Q55's isolation approximation", None)
 
     def q79():
-        fronttwo_starts = events[(events.player_position == "CF") & (events.game_interruption_before.isin(["goal_kick_for", "goal_kick_against"]))]
-        return phase_reaches(events[events.pressing_chain_end_type == "regain"], fronttwo_starts, "pressing_chain_end_type", "regain")
-    add(79, "Composite", "approximate", "player_position, game_interruption_before, pressing_chain (phase-level)",
-        "checks for a CF-involved pressing chain ending in regain anywhere in the same phase as a goal kick, not strictly a 5s start window",
+        return OBE[(OBE.player_position.isin(["CF", "LF", "RF"]))
+                   & (OBE.team_front_line_size == 2)
+                   & (OBE.game_interruption_before.isin(["goal_kick_for", "goal_kick_against"]))
+                   & (OBE.pressing_chain == True)
+                   & (OBE.pressing_chain_end_type == "regain")]
+    add(79, "Composite", "approximate", "player_position, team_front_line_size (derived), game_interruption_before, pressing_chain",
+        "'front two' is now literal (exactly two forwards on the pitch at that frame) rather than any CF row; the 5s-of-the-goal-kick window is still carried by game_interruption_before rather than measured directly",
         q79)
 
     add(80, "Composite", "exact", "is_substitute (roster join), last_line_break, lead_to_shot",

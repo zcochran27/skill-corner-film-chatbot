@@ -1,5 +1,26 @@
 # Real-Data Validation of the Exploration Notebook's Queries
 
+> **Historical record — partly superseded.** The numbers below (47 exact / 22 approximate /
+> 11 unresolved) were correct for this pass; the current result is **57 / 16 / 7**, see
+> `docs/enrichment.md` and `docs/master_plan.md`. Two conclusions in this doc were later
+> found to be **wrong**, and are corrected rather than deleted so the reasoning trail stays
+> intact:
+>
+> 1. **"`penalty_area_start`/`penalty_area_end` only ever fire for the *attacking* box"** is
+>    false. The flag fires for *either* box — 1,062 of its 3,863 True rows are in the row
+>    team's own box. It conflates the two, which is the real reason it cannot express "in
+>    their own box". The `x < -36` workaround this motivated was also unscaled for the 104m
+>    and 106m pitches.
+> 2. **"No goal-timestamp field ... (49, 51, 76)"** is false. Goal timestamps are derivable
+>    by unioning the `goal_for` markers with `team_score` changes — validated against all 20
+>    official scores. Those three questions now resolve exactly.
+>
+> The Q36 finding about `lead_to_shot` being False on all 60 header clearances is factually
+> right but was read as a finding about clearances; it is really a definitional mismatch
+> (`lead_to_shot` measures a shot within 10s of the event, not the *clearing team* later
+> shooting).
+
+
 `skillcorner_exploration.ipynb` validated the 8-gate query approach against **synthetic**
 data matching the SkillCorner schema exactly, since the chat sandbox that built it had no
 network access. This doc records the priority next step called out in `CLAUDE.md`: re-running

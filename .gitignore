@@ -5,3 +5,8 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+
+# Secrets - never commit. .env.example documents the shape; .env holds the real values.
+.env
+.env.*
+!.env.example

@@ -11,6 +11,49 @@ matches (not 10; the upstream repo has grown since this project started) of broa
 tracking data (10 fps) plus SkillCorner's derived Dynamic Events and Phases of Play
 datasets. No film/video files are involved anywhere in this project.
 
+## Answerability (MANDATED)
+**When the data cannot answer a question, the app says so. It never substitutes the nearest
+proxy and presents it as the real thing.** See `docs/answerability.md`; the registry and the
+verbatim user-facing text live in `scripts/answerability.py`.
+- `no_data` (captain, offside calls) - refuse permanently, explain why, offer the nearest
+  answerable alternative.
+- `not_implemented` - refuse *for now*; the data supports it, so do not make a
+  permanent-sounding promise. **Currently empty** - both former entries (dragged out of
+  position, foot race) have since been built.
+- `approximate` (14 questions) - answer, but **disclose the proxy alongside the results**.
+- `ranked` (Q17, Q66, Q68) - return an ordering; never phrase it as a filtered set, since
+  that smuggles in a threshold that was never measured.
+- `insufficient_data` - report as coverage, **never** fold into the answer set. Absence is a
+  positive answer for the negative/absence gate, so the two must stay distinct.
+Stage 2 must call `answerability.check(concept)` before emitting filters.
+
+## Data architecture (MANDATED)
+All data lives in a bronze/silver/gold medallion layout — see `docs/data_architecture.md`
+for the full contract. The rules are not optional:
+- `data/bronze/` raw and **immutable**; only `scripts/fetch_match_data.sh` writes there.
+- `data/silver/` cleaned, typed, conformed entity tables (`build_silver.py`). Cleaning and
+  validation only — no football concepts. Validation gates **fail the build**, never warn.
+- `data/gold/` derived, query-ready tables (`build_gold.py` applying `enrich.py`).
+- **Each layer reads only the layer below it.** Never `read_csv` from bronze outside
+  `build_silver.py`; never skip a layer.
+- Every derived column must be declared in `enrich.DERIVED_COLUMNS`.
+- Tracking is a deliberate exception: it stays JSONL in bronze, and silver holds only the
+  frame->byte-offset index, because Tier 3's lazy sweep seeks rather than scans.
+- **Gold is what is precomputed.** Cheap, reused, non-parameterised tracking fields go in
+  gold; advanced geometry is a lazy read through silver's index at query time.
+
+## Start here
+`docs/master_plan.md` is the single status entry point: pipeline state, what's built, issues
+hit and the fixes in place, current test-set results, and sequenced next steps.
+
+**Current state (keep this line current):** test set at **63 exact / 14 approximate / 3
+unresolved**, which is the ceiling - the three left (captain x2, offside calls) cannot be
+answered from any available data. Stages 0, 1, 3 and 4 are built; Tier 3 is complete.
+Stage 2 (query parsing) is built but **not ready**: after gates were shown the query so far,
+7 of 13 comparable questions return the right rows (was 5), with no misses or empty results,
+but the event_type gate now defers too far and regressed two (`docs/master_plan.md` 4l).
+Stage 5 (ranking/clip output) has not been started.
+
 ## Reference files in this folder
 - `coach_question_test_set.md` — 80 seed questions across 8 categories (player-specific,
   spatial, event-type, sequence/chain, game-state/temporal, comparative/relational,
@@ -29,9 +72,47 @@ datasets. No film/video files are involved anywhere in this project.
   as direct field filters, confirming the structured-filtering bet; one query (Q3,
   sequence) needed widening to a real `start_type` value the synthetic generator never
   produced.
+- `scripts/enrich.py` / `docs/enrichment.md` — **Tier 1 + Tier 2 enrichment, built and
+  validated.** Adds 32 derived columns (goal timeline, parameterised shot/goal windows,
+  true possession chains, mirror-safe per-match-scaled zone flags, squad units, captain
+  hook). Took the test set from 47/22/11 to **57 exact, 16 approximate, 7 unresolved**.
+  Also records three corrections to `docs/real_data_validation.md` — most importantly that
+  `penalty_area_start/end` fires for *either* box, not attacking-only.
+- `scripts/field_catalog.py` / `docs/field_catalog.md` — generated event_type × column
+  availability map. 168 of 350 columns are populated on exactly one event_type and 28 are
+  missing from at least one match entirely; filtering the wrong one returns zero rows
+  silently. Consult before emitting a filter.
+- `docs/tier3_tracking_plan.md` — tracking prerequisites (verified: LFS pull works, 73% of
+  frames have full 22-player data, the event/tracking mirror-sign rule and its halftime
+  flip), the metric definitions for the 4 tracking-blocked questions, and a catalogue of
+  further tracking features (pitch control, set-piece geometry, dyadic relations, movement
+  quality, clip boundaries). Its §2 precompute architecture is superseded.
+- `docs/tier3_lazy_retrieval_plan.md` — **the adopted Tier 3 design, now complete.** Phase 1
+  event filters produce a candidate set (median 156 events), then only those events' tracking
+  frames are fetched via a frame->byte-offset index and each candidate is confirmed
+  geometrically. Measured on real event windows: **~6ms per window cold, ~1.8ms warm** (OS page
+  cache), and **parsing is 96% of fetch cost**, so frame sampling is the dominant optimisation.
+  An earlier "1.79ms / 280ms per query" figure came from random frames plus a warm cache and
+  is superseded. The eager base came out narrower than planned: only `player_baselines` and
+  `phase_shape` were built, since nothing needed per-frame team scalars.
+- `scripts/frame_index.py`, `mirror_sign.py`, `predicates.py` — Tier 3 foundation: window
+  fetch with coverage, the measured tracking/event coordinate sign (80 groups at 100%
+  confidence), and the predicate harness (`--selftest` reproduces a Gold column from
+  tracking at 100%).
+- `scripts/setpiece.py`, `defensive.py`, `dyadic.py`, `tracking_base.py` — the tracking
+  predicates that resolved Q56, Q59, Q66, Q68, Q70, plus the per-player positional baselines.
+- `scripts/query_parse.py`, `query_schema.py` — **stage 2**, the 8-gate parsing chain and its
+  per-gate field vocabulary / `validate_filter()` guardrail. `--offline` runs a keyword stub.
+- `scripts/parse_cost.py`, `parse_eval.py`, `parse_exec.py` — measured stage 2 cost, and
+  grading against the hand-written queries. `parse_exec.py` grades by executing parses
+  against Gold, and that is the number to trust. Parses are saved, and `--regrade` re-applies
+  the current guardrails to them, so guardrail fixes can be verified without API calls.
+- `scripts/env.py` / `.env` — the Anthropic credential. `.env` is **gitignored**;
+  `.env.example` documents it. Never read or print `.env`.
 - `scripts/test_all_questions.py` — the full follow-up: all 80 questions from
   `coach_question_test_set.md` run against all 20 real matches (94,517 events), each
-  tagged exact/approximate/unresolved. **47 exact, 22 approximate, 11 unresolved.** Full
+  tagged exact/approximate/unresolved. **47 exact, 22 approximate, 11 unresolved** at the
+  time of that pass; 57/16/7 after Tier 1+2 enrichment; **63/14/3 now** after Tier 3. Full
   results and analysis in `docs/real_data_validation.md`'s second half, including:
   Category 6 (comparative/relational) turned out to be mostly resolvable from per-event
   fields (`separation_start/end`, `interplayer_distance`) without raw tracking, contrary
@@ -66,7 +147,9 @@ design.
    (phase 1: event-level filtering) then, if a spatial condition was flagged, a second
    pass against raw tracking data for fine-grained geometric confirmation (phase 2).
 4. **Validation** — confirm the retrieved candidates actually answer the coach's
-   question (stage not yet designed in detail).
+   question. **Built:** the phase-2 predicate harness (`scripts/predicates.py`) is the
+   validation - it confirms each candidate against tracking and returns evidence frames,
+   with `insufficient_data` kept distinct from a negative.
 5. **Output/ranking** — return a ranked list of clip segments (ranking logic is a
    TODO, explicitly left for later).
 
@@ -88,22 +171,78 @@ design.
 Each gate should self-report whether it applies before extracting anything, since most
 real questions only touch 2-4 of the 8 categories.
 
+## Tier 3 decisions (settled)
+- **Prefer ranking to thresholding for fuzzy football concepts.** Where a concept has no
+  crisp definition ("near post"), return results ranked by the underlying measurement rather
+  than filtered by a chosen cutoff - Q68's answer moves between 12% and 48% across
+  defensible zone definitions, and ranking removes the cutoff entirely.
+- **Vector/similarity search stays deferred, now with a scope.** Strongest case is
+  query-by-example ("more like this clip"), then the untagged concepts; strictly worse for
+  the questions that already resolve deterministically. Two reasons not to reach for it
+  early: it hides judgement that a rectangle makes inspectable, and it is poor at absence,
+  which is what the negative/absence gate needs. See `docs/master_plan.md`.
+- **Lazy per-event confirmation, not bulk precompute.** Phase 1 event filters yield a
+  candidate set (median 156 events); only those events' frames are fetched (~0.6% of the
+  corpus) and confirmed geometrically.
+- **Precompute only cheap, targetable fields.** Spreads/centroids/nearest-opponent cost
+  22us/frame (39s for the corpus) and feed the per-team baselines that lazy evaluation
+  can't compute; convex hull costs 625us/frame (~18 min) and stays lazy, as does anything
+  dyadic or query-parameterised.
+- **Sample frames within the window.** Convex hull on 50 frames x 156 candidates = 4.9s; at
+  5 frames per window, 0.5s. Sample density is a per-predicate parameter.
+
+## Query-parsing chain (stage 2) - gate ordering DECIDED
+`scripts/query_parse.py`. Ordering is **shape -> subject -> conditions**:
+1. **negative/absence** - inverts the query into an anti-join, so it changes the structure
+   and must be known before anything is built.
+2. **sequence** - event-level or chain-level grain.
+3. **event type** - decides which COLUMNS EXIST downstream (168 of 354 columns are populated
+   on exactly one event_type), so every later field-emitting gate depends on it.
+4. **player/role**, then 5. **spatial**, 6. **temporal**, 7. **comparative** (needs the
+   subject), 8. **outcome** (needs the grain).
+
+Every gate is optional and self-reporting: it first decides whether its dimension is present
+at all, and emits nothing if not - inventing a condition silently narrows the coach's
+results. Guardrails inside the chain: `answerability.check()` before any filter is emitted
+(an approximate concept applies its registered proxy filters, so the disclosure always
+describes what ran), and `query_schema.validate_filter()` on every filter, which rejects a
+column that is null for the event type it targets.
+
+**Each gate sees the query so far** (decided after the first real evaluation). Independent
+gates encoded one idea at different grains and the AND silently shrank the answer. Every
+gate now gets the earlier gates' filters in its user turn (the system prompt stays cached),
+is told to encode each condition once, and may `supersede` an earlier filter it owns by
+emitting its own replacement - never by deleting a condition, and never `event_type`.
+Card membership follows ownership: `chain_ended_in_shot` is the outcome gate's, not the
+sequence gate's.
+
+**The finished query is executed before it is returned.** An empty result is flagged with
+the filter that emptied it (`ParsedQuery.empty_reason`, via `parse_exec.funnel()`), and
+whether that filter is impossible alone or conflicts with an earlier one. Zero rows is never
+presented as "no clips".
+
 ## Open / not yet decided
-- Exact ordering/dependency of the 8 gates within the parsing chain.
-- Validation stage design.
-- Clip ranking logic — now more concrete since `scripts/test_all_questions.py` reports raw
-  event/row hit counts, not deduplicated clips; still need to decide how multiple matching
-  rows within one possession collapse into a single clip.
-- Whether/when to add a vector-embedding fallback path for the structured filters that
-  can't cover a question (explicitly deferred, not rejected).
-- The 11 unresolved test-set questions' 4 underlying gaps: no captain flag anywhere in the
-  schema, no goal-timestamp field to anchor "N minutes after scoring/conceding" windows,
-  a few questions needing raw multi-player tracking geometry (Git-LFS-only upstream, not
-  yet pulled), and a handful of concepts with no schema tag at all (offside, "tracked
-  back", defender rotation on a beaten fullback).
-- The actual query-parsing chain (LLM prompt(s) that turn a coach's question into the
-  8-gate structured query) — everything so far has hand-written the target query for a
-  known test-set question; no code yet turns free text into one.
+- **Stage 2 extraction quality - measured twice, not good enough yet.** 5/13, then 7/13
+  comparable questions return the right rows after gates were shown the query so far (which
+  fixed all three duplication cases). Open: the event_type gate deferring to other gates'
+  conditions (Q49, Q52), a concept named but never encoded (Q55), and the Q12/Q75 "left
+  winger" ground-truth label. Sequenced in `docs/master_plan.md` 4l. **Grade with
+  `parse_exec.py` (does the query execute to the right rows?), never column recall, which
+  reported 71% on the run that executed 5/13.**
+- **No end-to-end query runner.** The parser emits a validated JSON filter spec (not SQL);
+  only the grader executes it, at event grain. Negation, chain grain and tracking predicates
+  are built but not routed from a `ParsedQuery`.
+- **Clip ranking and output (stage 5)** - not started. `team_possession_id` already
+  collapses matching rows within one possession (Q66 turnovers go 749 -> 661), and phase-2
+  predicates return evidence frames usable as clip in/out points, but ranking itself is
+  undecided.
+- **Captain identity** - needs an external roster source; `data/captains.json` is the hook.
+- Whether/when to add a vector-embedding fallback (explicitly deferred, not rejected). Its
+  strongest case is query-by-example, which needs stage 5's clips to exist first.
+
+Resolved since this list was first written: the validation stage (the phase-2 predicate
+harness *is* the validation), the query-parsing chain (built), and every buildable
+unresolved question (Tier 3 complete).
 
 ## Working style notes
 - Brainstorm-then-build sequencing was intentional: test set first, then architecture,
@@ -111,3 +250,10 @@ real questions only touch 2-4 of the 8 categories.
   test set.
 - Prefer verifying claims against the official SkillCorner CSV spec (in
   `skillcorner_schema.md`) over assuming a field exists.
+- Better still, verify against the real data over the spec. Of the concrete bugs the
+  enrichment pass found, three were documented fields behaving differently than documented
+  (`penalty_area_*` firing for both boxes; `goal_for` markers missing on some goals and
+  mis-attributed on defensive rows; `lead_to_shot` on a defensive row referring to the
+  opponent's shot) and one was a field present in only half the matches
+  (`playing_time.sequences`). A filter against a column that is null for that event type
+  returns zero rows silently — it looks like a finding, not a bug.
