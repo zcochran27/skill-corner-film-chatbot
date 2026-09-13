@@ -23,11 +23,15 @@ What is graded, and how far to trust each number
                   needs_tracking. Those questions have no column ground truth at all.
   guardrail       Filters validate_filter() rejected. Any non-zero count means the model
                   reached for a column that could not have answered.
+  zero-row check  Parses the chain itself flagged as returning no rows. Every SILENT ZERO
+                  the grader finds should already be flagged here; one that is not means
+                  the check has a hole.
 
 Usage:
     python scripts/parse_eval.py --sample          # run + grade the 20-question sample
     python scripts/parse_eval.py --ids 1,5,23      # run + grade specific questions
     python scripts/parse_eval.py --regrade         # re-grade saved parses, no API calls
+    python scripts/parse_eval.py --regrade --file data/gold/parse_eval_run1.json
 """
 from __future__ import annotations
 
@@ -105,7 +109,7 @@ def load_ground_truth() -> dict:
     return out
 
 
-def run(ids: list[int]) -> list[dict]:
+def run(ids: list[int], max_spend: float | None = None) -> list[dict]:
     from query_parse import AnthropicGateClient, parse
 
     questions = load_questions()
@@ -127,42 +131,28 @@ def run(ids: list[int]) -> list[dict]:
               flush=True)
         OUT.parent.mkdir(parents=True, exist_ok=True)
         OUT.write_text(json.dumps(records, indent=2, default=str), encoding="utf-8")
+        if max_spend is not None and total >= max_spend and n < len(ids):
+            print(f"  STOPPED: ${total:.2f} reached the --max-spend cap of ${max_spend:.2f}; "
+                  f"{len(ids) - n} questions not parsed", flush=True)
+            break
     return records
 
 
-def reapply_guardrails(p: dict) -> dict:
-    """Re-run today's guardrails over a saved parse's raw model output.
+def reapply_guardrails(record: dict):
+    """Re-run today's chain logic over a saved parse's model replies.
 
     A saved parse holds two different things: what the MODEL said (concepts, filters) and
-    what the GUARDRAILS decided about it (refusal, rejections) at the time. Only the first is
-    worth paying for. Re-applying the current guardrails to it means a guardrail fix can be
-    graded against real model output without another API call - which is how the refusal
-    fix was verified at zero cost.
-    """
-    from answerability import check
-    from query_schema import FilterError, validate_filter
+    what the GUARDRAILS decided about it (refusal, rejections, supersedes, proxies, the
+    zero-row check) at the time. Only the first is worth paying for. Replaying the replies
+    through the real parse() - not a copy of its logic, which can drift - means a guardrail
+    fix can be graded against real model output without another API call.
 
-    refused, kind, rejected, kept = None, None, [], []
-    event_types: list = []
-    for g in p["gates"]:
-        for c in g["concepts"]:
-            v = check(c)
-            if v and v.kind in ("no_data", "not_implemented"):
-                refused, kind = v.say, v.kind
-                break
-        if refused:
-            break
-        for f in g["filters"] + [x["filter"] for x in g.get("rejected", [])]:
-            if f["column"] == "event_type":
-                event_types = f["value"] if isinstance(f["value"], list) else [f["value"]]
-        for f in g["filters"] + [x["filter"] for x in g.get("rejected", [])]:
-            try:
-                for et in (event_types or [None]):
-                    validate_filter(f["column"], et, f.get("op"), f.get("value"))
-                kept.append(f)
-            except FilterError as e:
-                rejected.append(str(e))
-    return dict(refusal=refused, refusal_kind=kind, kept=kept, rejected=rejected)
+    What replay cannot change is what the model saw: a run made before gates were shown the
+    query so far stays a run without that context.
+    """
+    from query_parse import ReplayClient, parse
+
+    return parse(record["question"], client=ReplayClient(record["parsed"]))
 
 
 def grade(records: list[dict]) -> None:
@@ -174,12 +164,15 @@ def grade(records: list[dict]) -> None:
         qid, p = r["qid"], r["parsed"]
         truth = gt[qid]
         expect_refuse = truth["fidelity"] == "unresolved"
-        live = reapply_guardrails(p)
-        refused = live["refusal"] is not None
-        emitted = sorted({f["column"] for f in live["kept"] if f["column"] != "event_type"})
+        live = reapply_guardrails(r)
+        refused = not live.answerable
+        kept = live.filters
+        emitted = sorted({f["column"] for f in kept if f["column"] != "event_type"})
         truth_cols = [c for c in truth["columns"] if c != "event_type"]
         hit = sorted(set(emitted) & set(truth_cols))
-        rejected = live["rejected"]
+        rejected = [x["why"] for g in live.gates for x in g.rejected]
+        superseded = [f"{s['filter']['column']} ({g.gate} -> {s['by']})"
+                      for g in live.gates for s in g.superseded]
         tracking_q = "tracking" in truth["fidelity"]
         rows.append(dict(
             qid=qid, category=truth["category"], fidelity=truth["fidelity"],
@@ -188,9 +181,10 @@ def grade(records: list[dict]) -> None:
             truth=truth_cols, emitted=emitted, hit=hit,
             recall=(len(hit) / len(truth_cols)) if truth_cols else None,
             precision=(len(hit) / len(emitted)) if emitted and truth_cols else None,
-            tracking_q=tracking_q, flagged_tracking=p["needs_tracking"],
-            gates=[g["gate"] for g in p["gates"] if g["applies"]],
-            rejected=rejected, disclosures=len(p["disclosures"]), kept=live["kept"],
+            tracking_q=tracking_q, flagged_tracking=live.needs_tracking,
+            gates=[g.gate for g in live.gates if g.applies],
+            rejected=rejected, superseded=superseded, disclosures=len(live.disclosures),
+            warnings=live.warnings, kept=kept, rows=live.rows, empty_reason=live.empty_reason,
             cost=sum(call_cost(c) for c in r["usage"]), seconds=r["seconds"]))
 
     n = len(rows)
@@ -234,6 +228,16 @@ def grade(records: list[dict]) -> None:
         print(f"tracking flagged         {sum(x['flagged_tracking'] for x in trk)}/{len(trk)} "
               f"tracking-resolved questions")
     print(f"guardrail rejections     {rej}")
+    answered = [x for x in rows if not x["refused"]]
+    flagged = [x for x in answered if x["rows"] == 0]
+    silent = {q for q, v in exec_rows if v["verdict"] == "SILENT ZERO"}
+    unflagged = silent - {x["qid"] for x in flagged}
+    print(f"zero-row check           {len(flagged)} of {len(answered)} answered queries "
+          f"flagged EMPTY" + (f"; MISSED {sorted(unflagged)}" if unflagged else
+                              "; every SILENT ZERO was caught"))
+    sup = sum(len(x["superseded"]) for x in rows)
+    if sup:
+        print(f"superseded filters       {sup}")
 
     print(f"\n{'Q':>3} {'category':16s} {'ref':>4s} {'recall':>6s} {'trk':>4s} "
           f"{'rej':>3s}  gates / notes")
@@ -251,6 +255,22 @@ def grade(records: list[dict]) -> None:
             extra = f"  ({v['blowup']:.0f}x the rows)" if v["verdict"] == "superset" else ""
             print(f"{q:>3} {v['truth_rows']:>6} {v['parser_rows']:>7} {v['recall']:>7.0%}  "
                   f"{v['verdict']}{extra}")
+
+    if flagged:
+        print("\n--- flagged EMPTY by the zero-row check ---")
+        for x in flagged:
+            print(f"Q{x['qid']}: {x['empty_reason']}")
+    if sup:
+        print("\n--- superseded (a later gate replaced an earlier filter) ---")
+        for x in rows:
+            for s in x["superseded"]:
+                print(f"Q{x['qid']}: {s}")
+    warned = [x for x in rows if x["warnings"]]
+    if warned:
+        print("\n--- warnings ---")
+        for x in warned:
+            for w in x["warnings"]:
+                print(f"Q{x['qid']}: {w}")
 
     misses = [x for x in graded if x["recall"] < 1.0]
     if misses:
@@ -276,10 +296,14 @@ def main() -> None:
     ap.add_argument("--ids", help="comma-separated question ids")
     ap.add_argument("--regrade", action="store_true",
                     help="re-apply today's guardrails to saved model output; no API calls")
+    ap.add_argument("--max-spend", type=float,
+                    help="stop once the run has spent this many dollars")
+    ap.add_argument("--file", type=Path, default=OUT,
+                    help="saved parses to regrade (default: the latest run)")
     args = ap.parse_args()
 
     if args.regrade:
-        grade(json.loads(OUT.read_text(encoding="utf-8")))
+        grade(json.loads(args.file.read_text(encoding="utf-8")))
         return
     ids = SAMPLE if args.sample else ([int(x) for x in args.ids.split(",")] if args.ids
                                       else None)
@@ -289,7 +313,7 @@ def main() -> None:
     from env import require_api_key
     require_api_key("the parse evaluation")
     print(f"parsing {len(ids)} questions ...")
-    grade(run(ids))
+    grade(run(ids, max_spend=args.max_spend))
 
 
 if __name__ == "__main__":

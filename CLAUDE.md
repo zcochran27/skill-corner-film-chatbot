@@ -49,9 +49,10 @@ hit and the fixes in place, current test-set results, and sequenced next steps.
 **Current state (keep this line current):** test set at **63 exact / 14 approximate / 3
 unresolved**, which is the ceiling - the three left (captain x2, offside calls) cannot be
 answered from any available data. Stages 0, 1, 3 and 4 are built; Tier 3 is complete.
-Stage 2 (query parsing) is built but **not ready**: its first real evaluation returns the
-right rows for only 5 of 13 comparable questions, because independent gates duplicate each
-other's filters (`docs/master_plan.md` 4k). Stage 5 (ranking/clip output) has not been started.
+Stage 2 (query parsing) is built but **not ready**: after gates were shown the query so far,
+7 of 13 comparable questions return the right rows (was 5), with no misses or empty results,
+but the event_type gate now defers too far and regressed two (`docs/master_plan.md` 4l).
+Stage 5 (ranking/clip output) has not been started.
 
 ## Reference files in this folder
 - `coach_question_test_set.md` — 80 seed questions across 8 categories (player-specific,
@@ -202,17 +203,35 @@ real questions only touch 2-4 of the 8 categories.
 
 Every gate is optional and self-reporting: it first decides whether its dimension is present
 at all, and emits nothing if not - inventing a condition silently narrows the coach's
-results. Two guardrails run inside the chain: `answerability.check()` before any filter is
-emitted, and `query_schema.validate_filter()` on every filter, which rejects a column that
-is null for the event type it targets.
+results. Guardrails inside the chain: `answerability.check()` before any filter is emitted
+(an approximate concept applies its registered proxy filters, so the disclosure always
+describes what ran), and `query_schema.validate_filter()` on every filter, which rejects a
+column that is null for the event type it targets.
+
+**Each gate sees the query so far** (decided after the first real evaluation). Independent
+gates encoded one idea at different grains and the AND silently shrank the answer. Every
+gate now gets the earlier gates' filters in its user turn (the system prompt stays cached),
+is told to encode each condition once, and may `supersede` an earlier filter it owns by
+emitting its own replacement - never by deleting a condition, and never `event_type`.
+Card membership follows ownership: `chain_ended_in_shot` is the outcome gate's, not the
+sequence gate's.
+
+**The finished query is executed before it is returned.** An empty result is flagged with
+the filter that emptied it (`ParsedQuery.empty_reason`, via `parse_exec.funnel()`), and
+whether that filter is impossible alone or conflicts with an earlier one. Zero rows is never
+presented as "no clips".
 
 ## Open / not yet decided
-- **Stage 2 extraction quality - measured, and not good enough yet.** 5 of 13 comparable
-  questions return the right rows. The main cause is architectural: each gate sees only the
-  question, so gates encode the same idea at different levels and the AND silently shrinks
-  the answer. The planned fix is to pass each gate the earlier gates' filters, plus a check
-  that runs the finished query and flags zero rows. **Grade with `parse_exec.py` (does the
-  query execute to the right rows?), never column recall, which reported 71% on the same run.**
+- **Stage 2 extraction quality - measured twice, not good enough yet.** 5/13, then 7/13
+  comparable questions return the right rows after gates were shown the query so far (which
+  fixed all three duplication cases). Open: the event_type gate deferring to other gates'
+  conditions (Q49, Q52), a concept named but never encoded (Q55), and the Q12/Q75 "left
+  winger" ground-truth label. Sequenced in `docs/master_plan.md` 4l. **Grade with
+  `parse_exec.py` (does the query execute to the right rows?), never column recall, which
+  reported 71% on the run that executed 5/13.**
+- **No end-to-end query runner.** The parser emits a validated JSON filter spec (not SQL);
+  only the grader executes it, at event grain. Negation, chain grain and tracking predicates
+  are built but not routed from a `ParsedQuery`.
 - **Clip ranking and output (stage 5)** - not started. `team_possession_id` already
   collapses matching rows within one possession (Q66 turnovers go 749 -> 661), and phase-2
   predicates return evidence frames usable as clip in/out points, but ranking itself is

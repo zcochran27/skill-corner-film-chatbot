@@ -39,17 +39,17 @@ Single entry point for where this project stands. Start here, then follow the li
 |---|---|---|
 | 0. Data layers | **Built** | Bronze/silver/gold mandated; consumer load 9.8s -> 0.73s |
 | 1. Preprocessing / enrichment | **Built** | `enrich.py` derivations applied by `build_gold.py`, 32 derived columns |
-| 2. Query parsing (8 gates) | **Built, NOT ready** | First real evaluation: refusals fixed to 20/20, but only 5 of 13 comparable questions return the right rows. Gates duplicate each other. See 4k |
+| 2. Query parsing (8 gates) | **Built, improving, NOT ready** | Gates now see the query so far; 7 of 13 comparable questions return the right rows (was 5), no misses or empty results. Two regressions from the event_type gate deferring too far. See 4k, 4l |
 | 3. Retrieval — phase 1 (events) | **Built** | Median 5ms, max 75ms across 73 timed questions |
 | 3. Retrieval — phase 2 (tracking) | **Working** | Q66/Q68/Q70 exact via tracking; 1.6-7.0s vs a 7.7ms event-filter median |
 | 4. Validation | **Designed** | Folded into phase 2: the predicate *is* the validation |
 | 5. Output / ranking | **Not started** | Clip dedup now tractable via `team_possession_id` |
 
-**Stage 2 is now built but unverified.** `scripts/query_parse.py` implements the chain,
-the gate ordering, and both guardrails, and runs end to end against all 80 questions with an
-offline keyword stub. What it has NOT had is a single real LLM call — that needs an
-`ANTHROPIC_API_KEY`. Until then, nothing is known about extraction quality; only the
-plumbing is proven.
+**Stage 2 is built and has had two real evaluations** against `claude-opus-5` on a
+20-question sample (4k, 4l). It is not ready for the full 80: 7 of 13 comparable questions
+return the right rows. Its output is a validated JSON filter spec executed against Gold -
+not SQL, and not clips. Nothing yet runs a parsed query end to end with negation, chain grain
+or tracking predicates; `parse_exec.py` ANDs filters at event grain.
 
 ---
 
@@ -163,6 +163,7 @@ error**. It looks like a finding. This has now happened five separate times:
 | Own-box queries built on a misdiagnosed `penalty_area_start` | 2 questions, 0 hits |
 | `playing_time.sequences` absent from 9 of 20 matches | Half of all unit flags silently null |
 | Q69 anti-join counting the beaten defender as his own cover | 0 hits across 20 matches |
+| Parse executor compared numbers as strings: a float column holding nulls stores 0 as `"0.0"` | `n_opponents_ahead_end eq 0` and shirt `number eq 9` matched nothing; Q2 and Q80 would have failed a full run |
 
 **Fix in place:** `scripts/field_catalog.py` generates `docs/field_catalog.md` — of 354
 columns, **168 are populated on exactly one event_type** and **28 are missing entirely from
@@ -170,9 +171,12 @@ at least one match**. The query-parsing stage must consult it before emitting a 
 rather than inferring availability. The catalog caught the `playing_time.sequences` case
 during development.
 
-**Still open:** nothing yet *enforces* this at query time. A `validate_filter(column,
-event_type)` assertion in the retrieval layer would turn a silent zero into a loud error,
-and should land alongside stage 2.
+**Now enforced at query time, twice.** `query_schema.validate_filter()` rejects a column
+that is null for the event type in play, or a value the column never takes. And the parser
+runs every finished query against Gold before returning it: an empty result is flagged with
+the filter that emptied it and whether that filter is impossible alone or conflicts with an
+earlier one. The second check caught the executor bug above on its first run, which the
+first check could not have seen - every column and value was valid.
 
 ### 4b. The schema doc is a guide, not ground truth
 
@@ -345,6 +349,73 @@ measuring a known problem. Fix the duplication first: pass each gate the filters
 emitted, and add a check that runs the finished query and flags a zero-row result. Then re-run
 this same 20-question sample (about $1.20) and compare against 5/13.
 
+## 4l. Stage 2's second evaluation - gates see the query so far
+
+The same 20 questions after the fix recommended in 4k, **$1.05** (cheaper than the first run
+despite longer prompts: refusals now stop the chain at the gate that refuses).
+
+**What changed**
+- **Each gate is shown the query so far** in its user turn (the system prompt stays cached),
+  told to encode each condition once, and may `supersede` an earlier filter it owns by
+  emitting a replacement. Gate questions state ownership ("whether it led to a shot belongs
+  to the outcome gate"), and `chain_ended_in_shot` moved off the sequence gate's card.
+- **Zero-row check** inside the parser (above, 4a).
+- **Approximate concepts apply their registered proxy** (`Verdict.proxy`). On Q25 the first
+  run attached "these are line-breaking passes" and never filtered `first_line_break`: a
+  disclosure describing a filter that did not run (`docs/answerability.md`).
+- **Numeric equality bug in the executor** fixed (4a).
+- `--regrade` now replays saved model replies through the real `parse()` rather than a copy
+  of its logic, so the grade cannot drift from the chain.
+
+Replaying the first run's saved replies through the new guardrails alone - no API calls -
+took it from 5 to 6 of 13 (Q25, via the proxy) and flagged Q35's empty result correctly.
+
+**Result: 7 of 13 comparable questions return the right rows, up from 5.** No misses, no
+silent zeros, refusals still 20/20.
+
+| Q | First run | Second run | Why |
+|---|---|---|---|
+| 35 | **zero rows** | equivalent (87/87) | spatial gate no longer restates `chain_reached_final_third` as `third_end` |
+| 39 | misses (4%) | equivalent (93%) | sequence gate left the shot window to the outcome gate |
+| 42 | misses (26%) | equivalent (100%) | event_type gate no longer adds an event-level regain |
+| 25 | superset (111x) | equivalent (28/28) | registered proxy applied |
+| 12 | misses (43%) | partial (50%) | see ground-truth note below |
+| 75 | misses (20%) | partial (60%) | same |
+| 55 | superset (197x) | partial (79%) | still no filter for "isolated"; player gate also dropped wing-backs this time |
+| 21 | superset (17x) | superset (17x) | unchanged; "six-yard box *versus* penalty spot" is arguably both zones |
+| **49** | equivalent | **partial (52%)** | **regression, caused by the context** |
+| **52** | equivalent | **superset (6x)** | **regression, caused by the context** |
+| 1, 9, 23 | equivalent | equivalent | |
+
+**The two regressions share one cause: the event_type gate deferred too far.** "Encode each
+condition once" works for conditions and fails for the event type, which is structural.
+- Q52: the event_type gate decided "direct play" was already covered by the sequence gate's
+  phase filter and emitted **no event type at all**. The query returned all four event
+  types - including defending-team rows, whose `game_state` is the *defender's*, so
+  "losing" pulled in 18 extra possessions. Not a grain artifact: 52 possessions vs 34.
+- Q49: the sequence gate wrote "pressing" as `pressing_chain == True`, and the event_type
+  gate deferred to that narrower encoding instead of the pressing subtypes, losing single
+  pressing actions outside chains.
+
+**`supersedes` was never used** in 20 questions. Q39 was fixed by the ownership wording, not
+by a supersede, so that mechanism is still unexercised.
+
+**Ground-truth note - Q12 and Q75.** Both ask about "their *left* winger"; both hand-written
+queries use `player_position in [LW, RW]`. The parser's `LW` is what the question says.
+Against LW-only rows, Q12's parse finds 46 of 46 in 63 rows, which is equivalent. The label
+has not been changed - that is a test-set decision, and it moves the 63/14/3 hit counts.
+
+**Next, in order**
+1. **Make the event type non-deferrable.** Prompt: the event_type gate always emits an
+   `event_type` filter; another gate's condition never covers it. Plus a free deterministic
+   check that flags any query with no event type, since every later guardrail validates
+   against it.
+2. **Decide the Q12/Q75 label** (LW only, per the question text).
+3. **The named-but-not-encoded failure (Q55)** is untouched by context. Q55 is an approximate
+   question; registering "isolated 1v1" with its proxy, like through ball, would apply it
+   deterministically.
+4. Re-run the same 20 (~$1.05) and compare to 7/13; only then the full 80 (~$4.50-5.50).
+
 ## 4j. Stage 2 cost - measured before spending
 
 Every parsing run costs real money, so the cost was measured on a small calibration sample
@@ -435,11 +506,14 @@ exist.
 ### In parallel — the actual product gap
 8. ~~**Stage 2, the query-parsing chain.**~~ **Built** (`scripts/query_parse.py`): gate
    ordering decided (shape -> subject -> conditions, see CLAUDE.md), per-gate "does this
-   apply?" self-report, `validate_filter` rejecting hallucinated or mis-targeted columns,
-   and `answerability.check()` refusing before any filter is emitted. **Not yet verified
-   against a real model** - needs an `ANTHROPIC_API_KEY`. The next step is an accuracy pass:
-   parse all 80 questions with `claude-opus-5` and compare the emitted filters against the
-   hand-written queries in `test_all_questions.py`, which are the ground truth.
+   apply?" self-report, gates shown the query so far, `validate_filter` rejecting
+   hallucinated or mis-targeted columns, `answerability.check()` refusing before any filter
+   is emitted, and a zero-row check on the finished query. **Evaluated twice on a 20-question
+   sample: 5/13, then 7/13 comparable questions return the right rows.** Next steps are in
+   4l; the full 80 waits until they land.
+8b. **An end-to-end query runner.** The parser's output is only executed by the grader,
+   at event grain. Negation (anti-join), chain grain and the tracking predicates exist and
+   are tested separately, but nothing routes a `ParsedQuery` through them.
 9. **Stage 5, ranking and clip dedup.** `team_possession_id` gives the grouping and Tier 3
    evidence frames give in/out points — most of a clip segmenter now exists. Ranking logic
    itself is still undecided.

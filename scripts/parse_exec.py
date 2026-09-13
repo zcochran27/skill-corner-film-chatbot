@@ -31,6 +31,11 @@ Verdicts per question
 
 Questions answered by tracking predicates, anti-joins or phase-level tables have no single
 event-row expression and are reported as not comparable rather than guessed at.
+
+The same executor backs the parser's zero-row check (query_parse.py): `funnel()` runs a
+query one filter at a time, so an empty result names the filter that emptied it. It is
+event-grain only - it ANDs filters, and does not yet apply negation, chain grouping or
+tracking predicates.
 """
 from __future__ import annotations
 
@@ -38,20 +43,19 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
+import sys
+
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from query_schema import _events  # noqa: E402  one shared copy of Gold events in memory
+
 ROOT = Path(__file__).resolve().parent.parent
-GOLD = ROOT / "data" / "gold"
 GROUND_TRUTH = Path(__file__).resolve().parent / "test_all_questions.py"
 
 
 def _b(col):
     return col.astype(str).str.lower().eq("true")
-
-
-@lru_cache(maxsize=1)
-def _events() -> pd.DataFrame:
-    return pd.read_parquet(GOLD / "events_enriched.parquet")
 
 
 @lru_cache(maxsize=1)
@@ -115,6 +119,18 @@ def _apply(df: pd.DataFrame, f: dict) -> pd.DataFrame:
     if c not in df.columns:
         return df.iloc[0:0]
     s = df[c]
+    if op == "notnull":
+        return df[s.notna()]
+    if op in ("eq", "ne", "in") and pd.api.types.is_numeric_dtype(s) \
+            and not pd.api.types.is_bool_dtype(s):
+        # Compare numbers as numbers. A float column holding nulls stringifies 0 as "0.0",
+        # so the string comparison below matched `n_opponents_ahead_end eq 0` - and shirt
+        # `number eq 9` - against nothing. The zero-row check caught it on its first run.
+        vals = pd.to_numeric(pd.Series(v if isinstance(v, list) else [v]), errors="coerce")
+        if vals.notna().all():
+            if op == "in":
+                return df[s.isin(vals.tolist())]
+            return df[(s == vals.iloc[0]) if op == "eq" else (s != vals.iloc[0])]
     low = s.astype(str).str.lower()
     if op == "eq":
         return df[low == str(v).lower()]
@@ -129,18 +145,42 @@ def _apply(df: pd.DataFrame, f: dict) -> pd.DataFrame:
     return df[{"gt": num > v, "gte": num >= v, "lt": num < v, "lte": num <= v}[op]]
 
 
-def execute(filters: list[dict]) -> pd.DataFrame:
-    """The rows a parsed query returns against Gold."""
+def _scope(filters: list[dict]) -> pd.DataFrame:
+    """Gold events restricted to the query's event types (all of them if none is given)."""
     ev = _events()
     ets = []
     for f in filters:
         if f["column"] == "event_type":
             ets = f["value"] if isinstance(f["value"], list) else [f["value"]]
-    df = ev[ev.event_type.isin(ets)] if ets else ev
+    return ev[ev.event_type.isin(ets)] if ets else ev
+
+
+def execute(filters: list[dict]) -> pd.DataFrame:
+    """The rows a parsed query returns against Gold."""
+    df = _scope(filters)
     for f in filters:
         if f["column"] != "event_type":
             df = _apply(df, f)
     return df
+
+
+def funnel(filters: list[dict]) -> list[dict]:
+    """Row counts as each filter is ANDed on, plus each filter's count on its own.
+
+    The two counts separate the two ways a query reaches zero. A filter that matches nothing
+    even alone is an impossible condition. A filter that matches plenty alone but empties the
+    running result conflicts with something before it - usually a second encoding of the same
+    idea at a different grain, the failure the first stage 2 evaluation turned up.
+    """
+    base = _scope(filters)
+    steps = [dict(filter=None, rows=len(base), alone=len(base))]
+    df = base
+    for f in filters:
+        if f["column"] == "event_type":
+            continue
+        df = _apply(df, f)
+        steps.append(dict(filter=f, rows=len(df), alone=len(_apply(base, f))))
+    return steps
 
 
 def grade_one(qid: int, filters: list[dict]) -> dict | None:

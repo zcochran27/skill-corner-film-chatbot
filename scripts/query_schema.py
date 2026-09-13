@@ -98,9 +98,12 @@ GATE_FIELDS: dict[str, list[str]] = {
         "seconds_since_goal_for", "seconds_since_goal_against",
         "seconds_until_goal_for", "seconds_until_goal_against",
     ],
+    # chain_ended_in_shot is deliberately NOT here: "sequences that ended in a shot" is the
+    # outcome gate's condition (CLAUDE.md, gate 8). Listing it on both cards let two gates
+    # encode one idea, and the chain ANDs every encoding together.
     "sequence": [
         "team_possession_id", "chain_n_possessions", "chain_reached_final_third",
-        "chain_reached_box", "chain_ended_in_shot", "chain_duration_s",
+        "chain_reached_box", "chain_duration_s",
         "n_player_possessions_in_phase", "team_in_possession_phase_type",
         "team_out_of_possession_phase_type", "pressing_chain",
         "pressing_chain_length", "pressing_chain_end_type",

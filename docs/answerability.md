@@ -98,12 +98,32 @@ disclosing* is the silent-substitution failure in milder form.
 
 The disclosure belongs **with the results**, not buried in a tooltip:
 
-> *"There's no 'through ball' tag in the data, so these are line-breaking passes from the
-> final third — close, but broader than a true through ball."*
+> *"There's no 'through ball' tag in the data, so these are passes that broke the
+> opponent's first line — close, but broader than a true through ball."*
 
 Documented proxies live in `APPROXIMATE_CONCEPTS` in `scripts/answerability.py`: through
 ball, cutback, game management, duel won, numerical advantage. The full per-question notes
 are inline in `scripts/test_all_questions.py`.
+
+**A disclosure must describe what actually ran.** Each approximate concept carries its proxy
+as filters (`Verdict.proxy`), and the parser applies them whenever it attaches the
+disclosure. This was not the case at first. In the first real evaluation, the model
+recognised "through ball" on Q25, the disclosure was attached, and no `first_line_break`
+filter was ever emitted: the coach would have been told "these are line-breaking passes"
+over every pass in the final third, 111x the true answer. That is a silent substitution
+wearing a disclosure. Applying the registered proxy fixed Q25 to the exact 28 rows at no
+API cost.
+
+Two rules in `query_parse._apply_proxies()`:
+- A proxy filter on a column the coach already constrained is skipped. "The last 10 minutes"
+  outranks game management's default "after the 80th minute".
+- If the proxy cannot be applied to the events in play (its column is never populated there),
+  the disclosure is **not** attached and a warning says the results are not narrowed to the
+  concept. Attaching it would describe a filter that did not run.
+
+The earlier through-ball wording also said "from the final third", which is Q25's location
+leaking into a concept-level disclosure. It was true for Q25 and false for any other
+through-ball question.
 
 ---
 
@@ -125,7 +145,11 @@ smuggles in a threshold that was never a measurement.
 
 1. **Stage 2, query parsing** — each gate resolves the coach's phrasing to a concept. Before
    emitting filters, call `answerability.check(concept)`. A `no_data` or `not_implemented`
-   verdict short-circuits: return the refusal, run no query.
+   verdict short-circuits: return the refusal, run no query. An `approximate` verdict applies
+   its registered proxy filters and attaches the disclosure. The finished query is then run
+   against Gold, and **an empty result is flagged with the filter that emptied it** rather
+   than returned as "no clips": in this project an empty result has far more often meant a
+   broken query than an absent pattern.
 2. **Stage 4, validation** — carry `status` through from the predicates. Anything not `ok`
    is a coverage caveat, never a row in the answer.
 3. **Stage 5, ranking and output** — attach the fidelity and any `say` disclosure to the
