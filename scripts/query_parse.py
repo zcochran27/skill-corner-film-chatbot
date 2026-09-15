@@ -53,25 +53,32 @@ GUARDRAILS, all required, all from the project's own scar tissue:
 Running it
     cp .env.example .env                    # then set ANTHROPIC_API_KEY (gitignored)
     python scripts/query_parse.py "show me every shot from outside the box"
+    python scripts/query_parse.py --provider gemini "..."   # or LLM_PROVIDER=gemini in .env
     python scripts/query_parse.py --offline "..."   # rule-based stub, no API key needed
     python scripts/query_parse.py --test-set        # parse all 80 test-set questions
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import re
 import sys
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from answerability import APPROXIMATE, check as answerability_check  # noqa: E402
-from env import effort as env_effort, require_api_key, status as env_status  # noqa: E402
+from env import (effort as env_effort, gemini_model, gemini_thinking,  # noqa: E402
+                 provider as env_provider, require_api_key, status as env_status)
 from query_schema import FilterError, card_for, validate_filter  # noqa: E402
 
 MODEL = "claude-opus-5"
 MAX_TOKENS = 8000
+#: Default for the Gemini client; GEMINI_MODEL in .env overrides it. Newest Flash model with
+#: a free tier as of 2026-09.
+GEMINI_MODEL = "gemini-3.8-flash"
 
 GATES = ["negative", "sequence", "event_type", "player",
          "spatial", "temporal", "comparative", "outcome"]
@@ -134,6 +141,12 @@ GATE_SCHEMA = {
                  "needs_tracking"],
     "additionalProperties": False,
 }
+
+
+class GateClientFatal(RuntimeError):
+    """A client failure that no later gate or question can recover from - a daily quota or a
+    bad key. parse() records an ordinary gate error as that gate not applying and moves on;
+    doing that here would save a whole run of empty parses that look like real answers."""
 
 
 # --------------------------------------------------------------------------------------
@@ -237,12 +250,13 @@ class AnthropicGateClient:
         )
         if self.effort:
             kwargs["output_config"]["effort"] = self.effort
-        import time
         t0 = time.perf_counter()
         resp = self._client.messages.create(**kwargs)
         u = resp.usage
         self.usage_log.append(dict(
             gate=gate,
+            provider="anthropic",
+            model=self.model,
             input_tokens=u.input_tokens,
             output_tokens=u.output_tokens,
             cache_creation_input_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
@@ -254,6 +268,115 @@ class AnthropicGateClient:
             raise RuntimeError(f"model refused: {getattr(resp, 'stop_details', None)}")
         text = next((b.text for b in resp.content if b.type == "text"), "")
         return json.loads(text)
+
+
+def _gemini_schema(schema: dict) -> dict:
+    """GATE_SCHEMA in the subset Gemini's structured output documents: it lists `anyOf` but
+    no `type` list, and an array needs `items`. Same replies, spelled differently."""
+    s = copy.deepcopy(schema)
+    scalar = [{"type": "string"}, {"type": "number"}, {"type": "boolean"}]
+    s["properties"]["filters"]["items"]["properties"]["value"] = {"anyOf": scalar + [
+        {"type": "null"}, {"type": "array", "items": {"anyOf": scalar}}]}
+    return s
+
+
+GEMINI_GATE_SCHEMA = _gemini_schema(GATE_SCHEMA)
+
+
+class GeminiGateClient:
+    """The same one-call-per-gate chain against the Gemini API, for trying the free tier.
+
+    Same prompts, same schema, same guardrails, so a parse is comparable with a Claude one.
+    Usage is logged under the Anthropic field names so parse_cost/parse_eval read it
+    unchanged. Gemini caches repeated prefixes implicitly, so there is no cache breakpoint to
+    set and no cache-write count to report.
+
+    The free tier is rate limited per minute and per day, and a failed call still counts
+    against the daily quota (measured: gemini-3.8-flash hit its 20/day cap after 6 good
+    replies and ~17 overloaded 503s). So a per-minute 429 is waited out for exactly the delay
+    the server names, and a 503 backs off slowly rather than hammering. A daily quota, a bad
+    key, a rejected request, or a model still unavailable after every retry stops the run:
+    recording those as gates that "do not apply" would save a parse that looks real.
+    """
+
+    MAX_RETRIES = 6
+
+    def __init__(self, model: str | None = None, thinking: str | None = None):
+        try:
+            from google import genai
+        except ImportError as exc:                      # pragma: no cover
+            raise RuntimeError("pip install google-genai") from exc
+        key = require_api_key("the query-parsing chain", "gemini")
+        self._client = genai.Client(api_key=key)
+        self.model = model or gemini_model(GEMINI_MODEL)
+        #: Called `effort` so parse_cost's report reads it like the Anthropic client's.
+        self.effort = thinking or gemini_thinking()
+        self.usage_log: list[dict] = []
+
+    def run_gate(self, gate: str, question: str, context: str = "") -> dict:
+        from google.genai import types
+
+        config = types.GenerateContentConfig(
+            system_instruction=_gate_system_prompt(gate),
+            response_mime_type="application/json",
+            response_json_schema=GEMINI_GATE_SCHEMA,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+        )
+        if self.effort:
+            config.thinking_config = types.ThinkingConfig(thinking_level=self.effort.upper())
+        t0 = time.perf_counter()
+        resp = self._generate(f"Coach's question: {question}\n\n{context}".strip(), config)
+
+        u = resp.usage_metadata
+        prompt = (u and u.prompt_token_count) or 0
+        cached = (u and u.cached_content_token_count) or 0
+        finish = resp.candidates[0].finish_reason if resp.candidates else None
+        stop = getattr(finish, "value", finish)
+        self.usage_log.append(dict(
+            gate=gate,
+            provider="gemini",
+            model=self.model,
+            input_tokens=prompt - cached,
+            output_tokens=((u and u.candidates_token_count) or 0)
+                          + ((u and u.thoughts_token_count) or 0),
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=cached,
+            seconds=time.perf_counter() - t0,
+            stop_reason=stop,
+        ))
+        text = resp.text
+        if not text or stop == "MAX_TOKENS":
+            block = resp.prompt_feedback.block_reason if resp.prompt_feedback else None
+            raise RuntimeError(f"no usable reply (finish_reason={stop}, block_reason={block})")
+        return json.loads(text)
+
+    def _generate(self, contents: str, config):
+        from google.genai import errors
+
+        for attempt in range(self.MAX_RETRIES + 1):
+            try:
+                return self._client.models.generate_content(
+                    model=self.model, contents=contents, config=config)
+            except errors.APIError as e:
+                detail = json.dumps(e.details, default=str)
+                if e.code == 429 and "PerDay" in detail:
+                    raise GateClientFatal(
+                        f"Gemini's daily free-tier quota for {self.model} is used up. It "
+                        f"resets at midnight Pacific; or set GEMINI_MODEL to another model, "
+                        f"whose quota is separate.") from e
+                if e.code in (400, 401, 403, 404):
+                    raise GateClientFatal(f"Gemini rejected the request ({e.code} "
+                                          f"{e.status}): {e.message}") from e
+                if e.code not in (429, 500, 503):
+                    raise
+                if attempt == self.MAX_RETRIES:
+                    raise GateClientFatal(f"Gemini still {e.code} {e.status} after "
+                                          f"{self.MAX_RETRIES} retries; try again later.") from e
+                hint = re.search(r'"retryDelay":\s*"(\d+(?:\.\d+)?)s"', detail)
+                wait = float(hint.group(1)) + 1 if hint else min(120, 15 * 2 ** attempt)
+                print(f"  gemini {e.code} {e.status}; retrying in {wait:.0f}s",
+                      file=sys.stderr, flush=True)
+                time.sleep(wait)
 
 
 class OfflineGateClient:
@@ -398,6 +521,8 @@ def parse(question: str, client=None, verbose: bool = False,
     for gate in GATES:
         try:
             raw = client.run_gate(gate, question, context=render_context(out))
+        except GateClientFatal:
+            raise
         except Exception as exc:                       # a gate failure is not a "no"
             out.gates.append(GateResult(gate=gate, applies=False,
                                         reasoning=f"gate error: {type(exc).__name__}: {exc}"))
@@ -537,9 +662,20 @@ def _check_rows(out: ParsedQuery) -> None:
 
 
 # --------------------------------------------------------------------------------------
-def _make_client(offline: bool, effort: str | None):
-    """Offline stub, or the real client - which exits with instructions if no key is set."""
-    return OfflineGateClient() if offline else AnthropicGateClient(effort=effort)
+#: --effort on the Gemini client. Gemini's thinking levels top out at high.
+_GEMINI_THINKING = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high",
+                    "max": "high"}
+
+
+def make_client(provider: str | None = None, effort: str | None = None,
+                offline: bool = False):
+    """Offline stub, or the real client for `provider` (default: LLM_PROVIDER in .env) -
+    which exits with instructions if that provider's key is not set."""
+    if offline:
+        return OfflineGateClient()
+    if env_provider(provider) == "gemini":
+        return GeminiGateClient(thinking=_GEMINI_THINKING.get(effort))
+    return AnthropicGateClient(effort=effort)
 
 
 def main() -> None:
@@ -548,6 +684,8 @@ def main() -> None:
     ap.add_argument("question", nargs="?", help="a coach's question")
     ap.add_argument("--offline", action="store_true",
                     help="use the keyword stub instead of the API (no key needed)")
+    ap.add_argument("--provider", choices=["anthropic", "gemini"],
+                    help="LLM to parse with (default: LLM_PROVIDER in .env, else anthropic)")
     ap.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"])
     ap.add_argument("--test-set", action="store_true",
                     help="parse every question in coach_question_test_set.md")
@@ -556,10 +694,10 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.status:
-        print(env_status())
+        print(env_status(args.provider))
         return
 
-    client = _make_client(args.offline, args.effort)
+    client = make_client(args.provider, args.effort, offline=args.offline)
 
     if args.test_set:
         text = (Path(__file__).resolve().parent.parent

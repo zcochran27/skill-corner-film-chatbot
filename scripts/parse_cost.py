@@ -14,6 +14,10 @@ just cache_creation_input_tokens = 0 - so the report shows what actually happene
 Usage:
     python scripts/parse_cost.py --calibrate 1,23,70     # run these test-set questions
     python scripts/parse_cost.py --report                # re-read the last calibration
+    python scripts/parse_cost.py --calibrate 1,23,70 --provider gemini   # own output file
+
+Gemini calls are costed at $0: this project uses Gemini only on the free tier, which is not
+billed. Their tokens and timings are still real.
 """
 from __future__ import annotations
 
@@ -30,6 +34,11 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "data" / "gold" / "parse_calibration.json"
 TEST_SET = ROOT / "coach_question_test_set.md"
 
+
+def out_path(provider: str) -> Path:
+    """Each provider saves to its own file, so a Gemini run never overwrites a Claude one."""
+    return OUT if provider == "anthropic" else OUT.with_stem(f"{OUT.stem}_{provider}")
+
 #: USD per million tokens for claude-opus-5 (first-party API rates).
 PRICE = {"input": 5.00, "output": 25.00}
 #: Cache pricing multipliers on the input rate (5-minute TTL).
@@ -44,6 +53,8 @@ def load_questions() -> dict:
 def call_cost(r: dict) -> float:
     """Cost of one call. input_tokens excludes cached tokens; cache writes and reads are
     billed separately at their own multipliers."""
+    if r.get("provider") == "gemini":                  # free tier: unbilled
+        return 0.0
     per = PRICE["input"] / 1e6
     return (r["input_tokens"] * per
             + r["cache_creation_input_tokens"] * per * CACHE_WRITE_MULT
@@ -51,11 +62,11 @@ def call_cost(r: dict) -> float:
             + r["output_tokens"] * PRICE["output"] / 1e6)
 
 
-def calibrate(qids: list[int]) -> dict:
-    from query_parse import AnthropicGateClient, parse
+def calibrate(qids: list[int], provider: str) -> dict:
+    from query_parse import make_client, parse
 
     questions = load_questions()
-    client = AnthropicGateClient()
+    client = make_client(provider)
     per_question = []
     for qid in qids:
         before = len(client.usage_log)
@@ -72,8 +83,9 @@ def calibrate(qids: list[int]) -> dict:
               f"${spent:.4f}", flush=True)
     result = dict(model=client.model, effort=client.effort or "default",
                   per_question=per_question)
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    out = out_path(provider)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
 
 
@@ -146,16 +158,19 @@ def main() -> None:
     ap.add_argument("--calibrate", help="comma-separated test-set question ids")
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--full-n", type=int, default=80)
+    ap.add_argument("--provider", choices=["anthropic", "gemini"],
+                    help="default: LLM_PROVIDER in .env, else anthropic")
     args = ap.parse_args()
 
+    from env import provider as env_provider, require_api_key
+    provider = env_provider(args.provider)
     if args.calibrate:
-        from env import require_api_key
-        require_api_key("calibration")
+        require_api_key("calibration", provider)
         ids = [int(x) for x in args.calibrate.split(",")]
         print(f"calibrating on {len(ids)} questions ({len(ids) * 8} API calls) ...")
-        report(calibrate(ids), args.full_n)
+        report(calibrate(ids, provider), args.full_n)
     elif args.report:
-        report(json.loads(OUT.read_text(encoding="utf-8")), args.full_n)
+        report(json.loads(out_path(provider).read_text(encoding="utf-8")), args.full_n)
     else:
         ap.print_help()
 

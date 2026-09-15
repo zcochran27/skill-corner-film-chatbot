@@ -5,8 +5,11 @@ Load local secrets from the gitignored .env at the repo root.
 Kept separate so every script that needs credentials resolves them the same way, and so the
 placeholder check lives in one place rather than being re-implemented per caller.
 
-Resolution order matches the SDK's own: an already-exported environment variable wins over
+Resolution order matches the SDKs' own: an already-exported environment variable wins over
 .env, so `ANTHROPIC_API_KEY=... python script.py` overrides the file without editing it.
+
+Two providers can run the query-parsing chain. LLM_PROVIDER picks one (default: anthropic);
+every credential function takes an optional `provider` and otherwise uses that setting.
 
 Usage:
     from env import load_env, require_api_key
@@ -25,7 +28,25 @@ EXAMPLE_FILE = ROOT / ".env.example"
 
 #: Values that mean "the user copied the template but has not filled it in". Treated as
 #: absent, because a confusing 401 from the API is a worse message than saying so directly.
-PLACEHOLDERS = {"", "REPLACE_ME", "sk-ant-...", "your-api-key", "changeme"}
+PLACEHOLDERS = {"", "REPLACE_ME", "sk-ant-...", "AIza...", "your-api-key", "changeme"}
+
+PROVIDERS = {
+    "anthropic": dict(
+        name="Anthropic",
+        key_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
+        example="sk-ant-...",
+        keys_url="https://console.anthropic.com/settings/keys",
+    ),
+    "gemini": dict(
+        name="Google Gemini",
+        # GEMINI_API_KEY is what AI Studio tells you to set; GOOGLE_API_KEY is the SDK's
+        # other accepted name.
+        key_vars=("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+        example="AIza...",
+        keys_url="https://aistudio.google.com/apikey",
+    ),
+}
+DEFAULT_PROVIDER = "anthropic"
 
 _loaded = False
 
@@ -57,35 +78,49 @@ def load_env(override: bool = False) -> bool:
     return True
 
 
-def api_key() -> str | None:
-    """The Anthropic credential, or None if absent or still a placeholder."""
+def provider(explicit: str | None = None) -> str:
+    """The LLM provider: an explicit choice (a --provider flag), else LLM_PROVIDER."""
     load_env()
-    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+    value = (explicit or os.environ.get("LLM_PROVIDER") or DEFAULT_PROVIDER).strip().lower()
+    if value not in PROVIDERS:
+        print(f"Unknown LLM provider {value!r}; expected one of {sorted(PROVIDERS)}.",
+              file=sys.stderr)
+        sys.exit(2)
+    return value
+
+
+def api_key(provider_name: str | None = None) -> str | None:
+    """The provider's credential, or None if absent or still a placeholder."""
+    spec = PROVIDERS[provider(provider_name)]
+    for name in spec["key_vars"]:
         value = (os.environ.get(name) or "").strip()
         if value and value not in PLACEHOLDERS:
             return value
     return None
 
 
-def require_api_key(what: str = "this") -> str:
+def require_api_key(what: str = "this", provider_name: str | None = None) -> str:
     """The credential, or exit with a message that says exactly what to do."""
-    key = api_key()
+    prov = provider(provider_name)
+    key = api_key(prov)
     if key:
         return key
-    raw = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+    spec = PROVIDERS[prov]
+    var = spec["key_vars"][0]
+    raw = (os.environ.get(var) or "").strip()
     if raw in PLACEHOLDERS and raw:
         problem = f"{ENV_FILE.name} still has the placeholder value {raw!r}."
     elif ENV_FILE.exists():
-        problem = f"{ENV_FILE.name} exists but sets no ANTHROPIC_API_KEY."
+        problem = f"{ENV_FILE.name} exists but sets no {var}."
     else:
         problem = f"No {ENV_FILE.name} found at the repo root."
     print(
-        f"No Anthropic credential available, so {what} cannot run.\n"
+        f"No {spec['name']} credential available, so {what} cannot run.\n"
         f"  {problem}\n\n"
         f"  Fix it with:\n"
         f"      cp {EXAMPLE_FILE.name} {ENV_FILE.name}   # if .env does not exist yet\n"
-        f"      # then edit {ENV_FILE.name} and set ANTHROPIC_API_KEY=sk-ant-...\n\n"
-        f"  .env is gitignored. Keys are at https://console.anthropic.com/settings/keys\n"
+        f"      # then edit {ENV_FILE.name} and set {var}={spec['example']}\n\n"
+        f"  .env is gitignored. Keys are at {spec['keys_url']}\n"
         f"  To exercise the chain without a key, pass --offline (keyword stub; it proves\n"
         f"  the plumbing works, not that extraction is any good).",
         file=sys.stderr)
@@ -98,14 +133,32 @@ def effort() -> str | None:
     return value if value in {"low", "medium", "high", "xhigh", "max"} else None
 
 
-def status() -> str:
+def gemini_model(default: str) -> str:
     load_env()
-    key = api_key()
-    if key:
-        return f"credential found (…{key[-4:]}), effort={effort() or 'default'}"
-    return "no credential - run with --offline, or set ANTHROPIC_API_KEY in .env"
+    return (os.environ.get("GEMINI_MODEL") or "").strip() or default
+
+
+def gemini_thinking() -> str | None:
+    load_env()
+    value = (os.environ.get("GEMINI_THINKING") or "").strip().lower()
+    return value if value in {"minimal", "low", "medium", "high"} else None
+
+
+def status(provider_name: str | None = None) -> str:
+    prov = provider(provider_name)
+    key = api_key(prov)
+    if not key:
+        var = PROVIDERS[prov]["key_vars"][0]
+        return (f"provider={prov}: no credential - run with --offline, or set {var} in "
+                f"{ENV_FILE.name}")
+    if prov == "gemini":
+        return (f"provider=gemini: credential found (…{key[-4:]}), "
+                f"thinking={gemini_thinking() or 'default'}")
+    return f"provider=anthropic: credential found (…{key[-4:]}), effort={effort() or 'default'}"
 
 
 if __name__ == "__main__":
     print(f".env present : {ENV_FILE.exists()}")
-    print(f"status       : {status()}")
+    for p in PROVIDERS:
+        print(f"{p:12s} : {status(p)}")
+    print(f"active       : {provider()}")

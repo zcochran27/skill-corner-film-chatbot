@@ -107,8 +107,10 @@ Stage 5 (ranking/clip output) has not been started.
   grading against the hand-written queries. `parse_exec.py` grades by executing parses
   against Gold, and that is the number to trust. Parses are saved, and `--regrade` re-applies
   the current guardrails to them, so guardrail fixes can be verified without API calls.
-- `scripts/env.py` / `.env` — the Anthropic credential. `.env` is **gitignored**;
-  `.env.example` documents it. Never read or print `.env`.
+- `scripts/env.py` / `.env` — the LLM credentials. `.env` is **gitignored**;
+  `.env.example` documents it. Never read or print `.env`. `LLM_PROVIDER=gemini` (or
+  `--provider gemini`) runs stage 2 on Gemini's free tier instead of Claude; Gemini runs
+  save to `*_gemini.json` so they never overwrite a Claude run.
 - `scripts/test_all_questions.py` — the full follow-up: all 80 questions from
   `coach_question_test_set.md` run against all 20 real matches (94,517 events), each
   tagged exact/approximate/unresolved. **47 exact, 22 approximate, 11 unresolved** at the

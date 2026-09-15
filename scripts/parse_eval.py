@@ -32,6 +32,11 @@ Usage:
     python scripts/parse_eval.py --ids 1,5,23      # run + grade specific questions
     python scripts/parse_eval.py --regrade         # re-grade saved parses, no API calls
     python scripts/parse_eval.py --regrade --file data/gold/parse_eval_run1.json
+    python scripts/parse_eval.py --sample --provider gemini   # saves to parse_eval_gemini.json
+    python scripts/parse_eval.py --all --resume    # all 80; skip questions already saved
+
+--resume keeps the saved parses and only parses questions not yet in the file, so a run cut
+off by a quota picks up where it stopped. It refuses to mix models in one file.
 """
 from __future__ import annotations
 
@@ -49,6 +54,11 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "data" / "gold" / "parse_eval.json"
 TEST_SET = ROOT / "coach_question_test_set.md"
 GROUND_TRUTH = Path(__file__).resolve().parent / "test_all_questions.py"
+
+
+def out_path(provider: str) -> Path:
+    """Each provider saves to its own file, so a Gemini run never overwrites a Claude one."""
+    return OUT if provider == "anthropic" else OUT.with_stem(f"{OUT.stem}_{provider}")
 
 #: Columns a hand-written query touches for bookkeeping rather than because the question asks
 #: for them - e.g. Q68 scopes to `match_id.isin(TRACKED)`. Counting these as ground truth
@@ -109,16 +119,33 @@ def load_ground_truth() -> dict:
     return out
 
 
-def run(ids: list[int], max_spend: float | None = None) -> list[dict]:
-    from query_parse import AnthropicGateClient, parse
+def run(ids: list[int], provider: str, max_spend: float | None = None,
+        resume: bool = False) -> list[dict]:
+    from query_parse import GateClientFatal, make_client, parse
 
     questions = load_questions()
-    client = AnthropicGateClient()
+    client = make_client(provider)
+    out = out_path(provider)
     records = []
+    if resume and out.exists():
+        records = json.loads(out.read_text(encoding="utf-8"))
+        saved = {c["model"] for r in records for c in r["usage"] if c.get("model")}
+        if saved - {client.model}:
+            sys.exit(f"{out.name} holds parses from {sorted(saved)}, not {client.model}; "
+                     f"move it aside rather than mixing models in one run.")
+        done = {r["qid"] for r in records}
+        print(f"  resuming: {len(done & set(ids))} of {len(ids)} already saved in {out.name}")
+        ids = [q for q in ids if q not in done]
     for n, qid in enumerate(ids, 1):
         before = len(client.usage_log)
         t0 = time.perf_counter()
-        parsed = parse(questions[qid], client=client)
+        try:
+            parsed = parse(questions[qid], client=client)
+        except GateClientFatal as e:
+            # Q{qid} is not saved; everything before it is. Grade what exists.
+            print(f"  STOPPED at Q{qid}: {e}\n  {len(ids) - n + 1} questions not parsed; "
+                  f"rerun with --resume to continue", flush=True)
+            break
         calls = client.usage_log[before:]
         records.append(dict(qid=qid, question=questions[qid],
                             seconds=round(time.perf_counter() - t0, 1),
@@ -129,8 +156,8 @@ def run(ids: list[int], max_spend: float | None = None) -> list[dict]:
         print(f"  [{n:>2}/{len(ids)}] Q{qid:<2} {len(calls)} calls "
               f"{records[-1]['seconds']:>5.0f}s  ${spent:.4f}  (running ${total:.2f})",
               flush=True)
-        OUT.parent.mkdir(parents=True, exist_ok=True)
-        OUT.write_text(json.dumps(records, indent=2, default=str), encoding="utf-8")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(records, indent=2, default=str), encoding="utf-8")
         if max_spend is not None and total >= max_spend and n < len(ids):
             print(f"  STOPPED: ${total:.2f} reached the --max-spend cap of ${max_spend:.2f}; "
                   f"{len(ids) - n} questions not parsed", flush=True)
@@ -293,27 +320,39 @@ def grade(records: list[dict]) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sample", action="store_true", help=f"the {len(SAMPLE)}-question sample")
+    ap.add_argument("--all", action="store_true", help="every test-set question")
     ap.add_argument("--ids", help="comma-separated question ids")
+    ap.add_argument("--resume", action="store_true",
+                    help="keep saved parses and only parse questions not yet saved")
     ap.add_argument("--regrade", action="store_true",
                     help="re-apply today's guardrails to saved model output; no API calls")
     ap.add_argument("--max-spend", type=float,
                     help="stop once the run has spent this many dollars")
-    ap.add_argument("--file", type=Path, default=OUT,
-                    help="saved parses to regrade (default: the latest run)")
+    ap.add_argument("--file", type=Path,
+                    help="saved parses to regrade (default: the provider's latest run)")
+    ap.add_argument("--provider", choices=["anthropic", "gemini"],
+                    help="default: LLM_PROVIDER in .env, else anthropic")
     args = ap.parse_args()
 
+    from env import provider as env_provider, require_api_key
+    provider = env_provider(args.provider)
     if args.regrade:
-        grade(json.loads(args.file.read_text(encoding="utf-8")))
+        grade(json.loads((args.file or out_path(provider)).read_text(encoding="utf-8")))
         return
-    ids = SAMPLE if args.sample else ([int(x) for x in args.ids.split(",")] if args.ids
-                                      else None)
+    if args.all:
+        ids = sorted(load_questions())
+    elif args.sample:
+        ids = SAMPLE
+    else:
+        ids = [int(x) for x in args.ids.split(",")] if args.ids else None
     if not ids:
         ap.print_help()
         return
-    from env import require_api_key
-    require_api_key("the parse evaluation")
-    print(f"parsing {len(ids)} questions ...")
-    grade(run(ids, max_spend=args.max_spend))
+    require_api_key("the parse evaluation", provider)
+    print(f"parsing {len(ids)} questions with {provider} -> {out_path(provider).name} ...")
+    records = run(ids, provider, max_spend=args.max_spend, resume=args.resume)
+    if records:
+        grade(sorted(records, key=lambda r: r["qid"]))
 
 
 if __name__ == "__main__":
